@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { api, type Job, type Segment } from './api'
+import { errorText } from './ui'
 
 const AUDIO = /\.(mp3|wav|flac|aac|m4a|ogg)$/i
 
@@ -84,15 +85,19 @@ export function usePlayer(): Player {
   return { ref, time, playing, rate, setRate, seek, playRange, toggle, skip }
 }
 
+type Variant = 'preview' | 'bench'
+
 /** Video (o audio) original con los subtítulos generados superpuestos. */
-export function MediaPlayer({ job, player }: { job: Job; player: Player }) {
+export function MediaPlayer({ job, player, variant = 'preview' }: { job: Job; player: Player; variant?: Variant }) {
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [job.id])
   const isAudio = AUDIO.test(job.original_name)
-  return <div className={`player ${isAudio ? 'audio' : ''}`}>
+  const height = variant === 'bench' ? 'max-h-[38vh] short:max-h-[30vh]' : isAudio ? 'max-h-[54px]' : 'max-h-[420px]'
+  return <div className="bg-[#05080e] border border-panel-line rounded-[10px] overflow-hidden grid place-items-center min-h-[120px]">
     {failed
-      ? <p className="error-text">El navegador no puede reproducir este formato. Los subtítulos y la selección siguen funcionando.</p>
+      ? <p className={`${errorText} p-[18px] text-center`}>El navegador no puede reproducir este formato. Los subtítulos y la selección siguen funcionando.</p>
       : <video key={job.id} ref={player.ref} controls preload="metadata" src={api.media(job.id)}
+          className={`w-full block bg-black [&::cue]:bg-[#000000c0] [&::cue]:text-[15px] ${height}`}
           onError={() => setFailed(true)}>
           {job.status === 'completed' && <track kind="subtitles" src={api.vtt(job.id)} default
             srcLang={job.transcript?.language} label="SubDub" />}
@@ -105,10 +110,22 @@ type CueListProps = {
   time: number
   onCueClick: (index: number, event: React.MouseEvent) => void
   selection?: [number, number] | null
+  variant?: Variant
+}
+
+const LIST = {
+  preview: 'mt-[14px] max-h-[330px]',
+  bench: 'flex-1 min-h-[120px] max-h-none mt-0 upto1100:max-h-[340px]',
+}
+
+function cueState(playing: boolean, selected: boolean) {
+  if (selected) return `border-l-[#8b8cff] ${playing ? 'bg-[#263b4d]' : 'bg-[#25264d]'}`
+  if (playing) return 'border-l-ok bg-[#13231f]'
+  return 'border-l-transparent bg-transparent hover:bg-field'
 }
 
 /** Lista de subtítulos: resalta el que suena y, opcionalmente, un rango seleccionado. */
-export function CueList({ segments, time, onCueClick, selection }: CueListProps) {
+export function CueList({ segments, time, onCueClick, selection, variant = 'preview' }: CueListProps) {
   const playing = segments.findIndex(s => time >= s.start && time < s.end)
   const listRef = useRef<HTMLDivElement>(null)
 
@@ -120,12 +137,13 @@ export function CueList({ segments, time, onCueClick, selection }: CueListProps)
     }
   }, [playing])
 
-  return <div className="segments cues" ref={listRef}>
+  return <div className={`overflow-auto border border-[#283347] rounded-[8px] relative ${LIST[variant]}`} ref={listRef}>
     {segments.map((s, i) => {
-      const selected = selection && i >= selection[0] && i <= selection[1]
+      const selected = !!selection && i >= selection[0] && i <= selection[1]
       return <button type="button" key={i} onClick={e => onCueClick(i, e)}
-        className={`segment cue ${i === playing ? 'playing' : ''} ${selected ? 'selected' : ''}`}>
-        <span>{clock(s.start)} → {clock(s.end)}</span><p>{s.text}</p>
+        className={`block w-full text-left text-inherit cursor-pointer py-[12px] px-[15px] border-0 border-b border-b-[#263144] border-l-[3px] last:border-b-0 ${cueState(i === playing, selected)}`}>
+        <span className="font-[monospace] text-[10px] text-[#9899ff]">{clock(s.start)} → {clock(s.end)}</span>
+        <p className="text-[13px] leading-[1.6] mt-[7px] mx-0 mb-0 text-[#d7dfed]">{s.text}</p>
       </button>
     })}
   </div>

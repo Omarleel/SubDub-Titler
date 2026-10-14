@@ -1,0 +1,5 @@
+# Runtime CUDA 12 + cuDNN 9: wheel Linux x86_64/Windows x86_64.
+# Alternativa: librerías NVIDIA del sistema; NO instalar dos copias distintas.
+# Comprobación de compatibilidad y performance obligatoria sobre RTX 5060 Ti.
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.27.0.42

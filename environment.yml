@@ -1,0 +1,11 @@
+# Dependencias binarias de Conda primero; pip exclusivamente DESPUÉS.
+name: subdub-titler
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.12
+  - pip>=25,<27
+  - ffmpeg>=7,<9
+  - setuptools>=75,<82
+  - wheel

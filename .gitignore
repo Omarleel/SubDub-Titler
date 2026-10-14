@@ -1,0 +1,17 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+*.egg-info/
+.env
+.venv/
+node_modules/
+apps/web/dist/
+*.sqlite3
+*.db
+artifacts/
+.local/
+reports/
+*.nsys-rep
+*.qdrep
+docs

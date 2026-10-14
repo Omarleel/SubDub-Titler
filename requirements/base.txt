@@ -1,0 +1,3 @@
+# Este archivo es un punto de entrada, NO un lock transitivo.
+# Instalar una sola vez tras conda env create -f environment.yml.
+-e .

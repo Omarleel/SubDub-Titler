@@ -1,0 +1,2 @@
+# Un único comando pip instala el extra de anotaciones CUDA.
+-e .[asr,dev,profiling]

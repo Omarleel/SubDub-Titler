@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=75,<82", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subdub-titler"
+version = "0.1.0"
+description = "Subtítulos locales, validación multilingüe y profiling reproducible."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{name = "SubDub-Titler contributors"}]
+license = "MIT"
+dependencies = [
+  "typer==0.27.3",
+  "rich>=13.9,<15",
+  "fastapi==0.142.4",
+  "uvicorn==0.54.0",
+  "pydantic>=2.12,<3",
+  "python-multipart>=0.0.20,<1",
+]
+
+[project.optional-dependencies]
+asr = [
+  "faster-whisper==1.2.1",
+  "ctranslate2==4.8.3",
+  # PyAV 19 eliminó av.open(metadata_errors=...), usado por faster-whisper 1.2.1.
+  "av>=11,<19",
+]
+profiling = ["nvtx==0.2.16"]
+dev = [
+  "pytest>=8.4,<10",
+  "httpx>=0.28,<0.30",
+  "ruff>=0.13,<0.17",
+]
+
+[project.scripts]
+subdub = "subdub_titler.interfaces.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]

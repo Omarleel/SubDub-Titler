@@ -28,10 +28,11 @@ error_console = Console(stderr=True)
 
 
 def _request(path: Path, model: str, device: str, compute_type: str,
-             language: str, beam_size: int) -> TranscriptionRequest:
+             language: str, beam_size: int, batch_size: int) -> TranscriptionRequest:
     return TranscriptionRequest(
         source=path.resolve(), model_id=model, device=device,
         compute_type=compute_type, language=language, beam_size=beam_size,
+        batch_size=batch_size,
     )
 
 
@@ -64,6 +65,7 @@ def transcribe(
     compute_type: Annotated[str, typer.Option()] = "float16",
     language: Annotated[str, typer.Option()] = "auto",
     beam_size: Annotated[int, typer.Option()] = 5,
+    batch_size: Annotated[int, typer.Option(help="Fragmentos en paralelo; 1 = secuencial")] = 16,
     format: Annotated[str, typer.Option(help="srt|vtt")] = "srt",
     output: Annotated[Path | None, typer.Option()] = None,
     profile: Annotated[Path | None, typer.Option(help="Reporte JSON de spans")] = None,
@@ -71,7 +73,7 @@ def transcribe(
 ) -> None:
     """Generar subtítulos mediante faster-whisper (descarga pesos al primer uso)."""
     try:
-        request = _request(input, model, device, compute_type, language, beam_size)
+        request = _request(input, model, device, compute_type, language, beam_size, batch_size)
         target = output or input.with_suffix(f".{format}")
         if format not in ("srt", "vtt"):
             raise ValueError("Formato admitido: srt, vtt")
@@ -119,12 +121,14 @@ def benchmark(
     device: Annotated[str, typer.Option()] = "cuda",
     compute_type: Annotated[str, typer.Option()] = "float16",
     language: Annotated[str, typer.Option()] = "auto",
+    batch_size: Annotated[int, typer.Option(min=1, max=64)] = 16,
     repeats: Annotated[int, typer.Option(min=1, max=30)] = 3,
     warmups: Annotated[int, typer.Option(min=0, max=10)] = 1,
     output: Annotated[Path, typer.Option()] = Path("reports/benchmark.json"),
 ) -> None:
     """Repeticiones con modelo en caché; tiempos completos, incluye decodificación."""
-    request = _request(input, model, device, compute_type, language, beam_size=5)
+    request = _request(input, model, device, compute_type, language, beam_size=5,
+                       batch_size=batch_size)
     use_case = TranscribeUseCase(default_registry())
     for _ in range(warmups):
         use_case.execute(request)
@@ -132,7 +136,7 @@ def benchmark(
     seconds = [r.elapsed_seconds for r in runs]
     result = {
         "schema_version": 1, "model": model, "device": device,
-        "compute_type": compute_type, "language": language,
+        "compute_type": compute_type, "language": language, "batch_size": batch_size,
         "repeats": repeats, "warmups": warmups,
         "seconds": seconds, "mean_seconds": statistics.mean(seconds),
         "median_seconds": statistics.median(seconds),
@@ -155,6 +159,7 @@ def profile(
     language: Annotated[str, typer.Option()] = "auto",
     device: Annotated[str, typer.Option()] = "cuda",
     compute_type: Annotated[str, typer.Option()] = "float16",
+    batch_size: Annotated[int, typer.Option(min=1, max=64)] = 16,
     output: Annotated[Path, typer.Option(help="Prefijo de resultados")] = Path("reports/profile"),
 ) -> None:
     """Spans, funciones Python, CUDA timeline (nsys) o kernels (ncu)."""
@@ -165,13 +170,14 @@ def profile(
     output.parent.mkdir(parents=True, exist_ok=True)
     args = ["transcribe", str(input.resolve()), "--model", model,
             "--language", language, "--device", device, "--compute-type", compute_type,
+            "--batch-size", str(batch_size),
             "--profile", str(output.with_suffix(".json")),
             "--output", str(output.with_suffix(".srt"))]
     if level in ("spans", "functions"):
         if level == "functions":
             args.extend(["--cprofile", str(output.with_suffix(".pstats"))])
         transcribe(input=input, model=model, language=language, device=device,
-                   compute_type=compute_type, beam_size=5, format="srt",
+                   compute_type=compute_type, beam_size=5, batch_size=batch_size, format="srt",
                    output=output.with_suffix(".srt"),
                    profile=output.with_suffix(".json"),
                    cprofile=output.with_suffix(".pstats") if level == "functions" else None)

@@ -7,10 +7,19 @@ Device = Literal["cpu", "cuda"]
 
 
 @dataclass(frozen=True, slots=True)
+class Word:
+    """Palabra con tiempos del motor; `text` conserva el espacio inicial del tokenizador."""
+    start: float
+    end: float
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class Segment:
     start: float
     end: float
     text: str
+    words: tuple[Word, ...] = ()
 
     def __post_init__(self) -> None:
         if self.start < 0 or self.end <= self.start:
@@ -38,13 +47,16 @@ class TranscriptionRequest:
     compute_type: str = "float16"
     beam_size: int = 5
     vad_filter: bool = True
-    word_timestamps: bool = False
+    word_timestamps: bool = True
+    batch_size: int = 16  # 1 = decodificación secuencial
 
     def __post_init__(self) -> None:
         if not self.source.is_file():
             raise FileNotFoundError(f"Archivo no encontrado: {self.source}")
         if self.beam_size < 1 or self.beam_size > 20:
             raise ValueError("beam_size debe estar entre 1 y 20")
+        if self.batch_size < 1 or self.batch_size > 64:
+            raise ValueError("batch_size debe estar entre 1 y 64")
         if self.language not in ("auto", "en", "es", "ja", "zh"):
             raise ValueError("Idioma no soportado")
         if self.device not in ("cpu", "cuda"):

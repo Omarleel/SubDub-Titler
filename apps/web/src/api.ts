@@ -37,4 +37,6 @@ export const api = {
       body: JSON.stringify({ reference, hypothesis, language }),
     }).then(r => unwrap<Evaluation>(r)),
   subtitles: (id: string) => `/api/v1/jobs/${id}/subtitles`,
+  media: (id: string) => `/api/v1/jobs/${id}/media`,
+  vtt: (id: string) => `/api/v1/jobs/${id}/subtitles.vtt`,
 }

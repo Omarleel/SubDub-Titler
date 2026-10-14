@@ -55,3 +55,39 @@ def test_complete_job_via_adapter_contract(tmp_path):
         assert subtitle.status_code == 200
         assert "00:00:00,100 --> 00:00:01,300" in subtitle.text
         assert any(event["name"] == "asr.transcribe_complete" for event in job["profiling"])
+        media = client.get(f"/api/v1/jobs/{job_id}/media", headers={"Range": "bytes=0-2"})
+        assert media.status_code == 206 and media.content == b"not"
+        assert media.headers["content-type"] == "audio/wav"
+        vtt = client.get(f"/api/v1/jobs/{job_id}/subtitles.vtt")
+        assert vtt.headers["content-type"].startswith("text/vtt")
+        assert "00:00:00.100 --> 00:00:01.300\nHola" in vtt.text
+        assert client.get("/api/v1/jobs/unknown/media").status_code == 404
+
+
+def test_frontend_assets_served_as_javascript(tmp_path):
+    """Windows puede registrar .js como text/plain; los módulos ES lo rechazan."""
+    import pytest
+    from pathlib import Path
+    assets = Path(__file__).resolve().parents[1] / "apps" / "web" / "dist" / "assets"
+    bundles = list(assets.glob("*.js")) if assets.is_dir() else []
+    if not bundles:
+        pytest.skip("Frontend no compilado")
+    with TestClient(create_app(home=tmp_path)) as client:
+        response = client.get(f"/assets/{bundles[0].name}")
+        assert response.headers["content-type"].startswith("text/javascript")
+
+
+def test_spa_routes_survive_reload(tmp_path):
+    """Recargar /precision o /rendimiento debe devolver la UI, no 404; /api sigue siendo JSON."""
+    import pytest
+    from pathlib import Path
+    if not (Path(__file__).resolve().parents[1] / "apps" / "web" / "dist").is_dir():
+        pytest.skip("Frontend no compilado")
+    with TestClient(create_app(home=tmp_path)) as client:
+        for path in ("/", "/precision", "/rendimiento?trabajo=abc", "/transcribir"):
+            response = client.get(path)
+            assert response.status_code == 200
+            assert '<div id="root">' in response.text
+        assert client.get("/api/v1/inexistente").status_code == 404
+        assert client.get("/../pyproject.toml").status_code in (200, 404)
+        assert "[project]" not in client.get("/..%2F..%2F..%2Fpyproject.toml").text

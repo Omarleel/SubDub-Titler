@@ -1,5 +1,6 @@
 """API local segura por defecto, separada de modelos e infraestructura."""
 import logging
+import mimetypes
 import os
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -8,20 +9,28 @@ from typing import Annotated
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from subdub_titler.application.jobs import LocalJobWorker
 from subdub_titler.application.quality import evaluate
 from subdub_titler.application.transcribe import TranscribeUseCase
+from subdub_titler.domain.models import Segment, Transcript
 from subdub_titler.infrastructure.doctor import diagnostics
 from subdub_titler.infrastructure.registry import ModelRegistry, default_registry
 from subdub_titler.infrastructure.storage import SqliteJobs
+from subdub_titler.infrastructure.subtitles import VttRenderer
 
 logger = logging.getLogger(__name__)
-EXTENSIONS = {".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".mp4", ".mkv", ".mov", ".webm"}
 MAX_UPLOAD_BYTES = 2 * 1024**3
+# Explícitos: el registro de Windows no es fiable para tipos MIME.
+MEDIA_TYPES = {
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".flac": "audio/flac", ".aac": "audio/aac",
+    ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".mp4": "video/mp4", ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime", ".webm": "video/webm",
+}
+EXTENSIONS = set(MEDIA_TYPES)
 
 
 class EvaluationRequest(BaseModel):
@@ -136,10 +145,49 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None) 
         return FileResponse(job["output_path"], filename=f"{identifier}.srt",
                             media_type="application/x-subrip")
 
+    @app.get("/api/v1/jobs/{identifier}/media")
+    def get_media(identifier: str) -> FileResponse:
+        """Archivo original para el reproductor; FileResponse atiende Range (seek)."""
+        job = jobs.get(identifier)
+        if not job:
+            raise HTTPException(404, "Job no encontrado")
+        path = Path(job["file_path"])
+        if not path.is_file():
+            raise HTTPException(410, "El archivo original ya no está disponible")
+        return FileResponse(path, media_type=MEDIA_TYPES.get(path.suffix.lower()))
+
+    @app.get("/api/v1/jobs/{identifier}/subtitles.vtt")
+    def get_vtt(identifier: str) -> Response:
+        job = jobs.get(identifier)
+        if not job:
+            raise HTTPException(404, "Job no encontrado")
+        if job["status"] != "completed" or not job["transcript"]:
+            raise HTTPException(409, "Transcripción aún no disponible")
+        data = job["transcript"]
+        transcript = Transcript(
+            tuple(Segment(s["start"], s["end"], s["text"]) for s in data["segments"]),
+            data["language"], data["model_id"], data["duration_seconds"],
+        )
+        return Response(VttRenderer().render(transcript), media_type="text/vtt")
+
     # En distribución el frontend compilado se sirve en el mismo puerto (sin CORS).
     # El dev server Vite usa proxy hacia 127.0.0.1:8000.
     dist = Path(__file__).resolve().parents[3] / "apps" / "web" / "dist"
     if dist.is_dir():
-        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
+        # Windows puede mapear .js a text/plain en el registro; los módulos ES lo rechazan.
+        mimetypes.add_type("text/javascript", ".js")
+        mimetypes.add_type("text/css", ".css")
+        app.mount("/assets", StaticFiles(directory=dist / "assets"), name="assets")
+        root = dist.resolve()
+
+        @app.get("/{path:path}", include_in_schema=False)
+        def frontend(path: str) -> FileResponse:
+            # Rutas del SPA (/precision, /rendimiento…) devuelven index.html al recargar.
+            if path == "api" or path.startswith("api/"):
+                raise HTTPException(404, "Ruta no encontrada")
+            target = (root / path).resolve()
+            if path and target.is_file() and target.is_relative_to(root):
+                return FileResponse(target)
+            return FileResponse(root / "index.html")
     return app
 

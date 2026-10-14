@@ -3,6 +3,7 @@ from pathlib import Path
 
 from subdub_titler.domain.models import RunResult, TranscriptionRequest
 from subdub_titler.domain.ports import EngineRegistry
+from subdub_titler.domain.segmentation import resegment
 from subdub_titler.infrastructure.profiling import SpanProfiler
 from subdub_titler.infrastructure.subtitles import SrtRenderer, VttRenderer
 
@@ -19,6 +20,8 @@ class TranscribeUseCase:
                 engine = self._registry.engine_for(request)
             with profiler.measure("asr.transcribe_complete"):
                 transcript = engine.transcribe(request)
+            with profiler.measure("subtitles.resegment"):
+                transcript = resegment(transcript)
         elapsed = time.perf_counter() - start
         duration = transcript.duration_seconds
         return RunResult(transcript, elapsed / duration if duration else None,

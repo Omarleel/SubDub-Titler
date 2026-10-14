@@ -4,6 +4,8 @@ import shutil
 import subprocess
 from dataclasses import asdict, dataclass
 
+from subdub_titler.infrastructure.gpu_runtime import ensure_cuda_libraries
+
 
 @dataclass(frozen=True)
 class Check:
@@ -36,6 +38,7 @@ def diagnostics() -> list[Check]:
     else:
         result.append(Check("NVIDIA GPU", False, "nvidia-smi no encontrado"))
     try:
+        ensure_cuda_libraries()
         import ctranslate2
         supported = ctranslate2.get_supported_compute_types("cuda")
         result.append(Check("CTranslate2 CUDA", True, ", ".join(sorted(supported))))

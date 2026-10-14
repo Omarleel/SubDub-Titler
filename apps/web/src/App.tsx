@@ -1,25 +1,51 @@
 import { useEffect, useState } from 'react'
-import { api, type Evaluation, type Job, type Model } from './api'
+import { api, type Job, type Model, type ProfileEvent } from './api'
+import { CueList, MediaPlayer, usePlayer } from './media'
+import { QualityPage } from './QualityPage'
+import { ROUTES, useLocation, type Route } from './router'
 
-type Tab = 'workspace' | 'quality' | 'profiling'
+const PAGES: Record<Route, { icon: string; title: string; subtitle: string }> = {
+  transcribir: { icon: '▣', title: 'Estudio de transcripción', subtitle: 'Convierte audio y video en subtítulos con modelos ejecutados en tu equipo.' },
+  precision: { icon: '◎', title: 'Medir precisión', subtitle: 'Compara la transcripción automática con el texto correcto y calcula el porcentaje de acierto.' },
+  rendimiento: { icon: '▥', title: 'Rendimiento', subtitle: 'Cuánto tardó cada etapa del proceso y qué tan rápido fue frente al tiempo real.' },
+}
+const STATUS: Record<Job['status'], string> = {
+  queued: 'En cola', running: 'Procesando', completed: 'Completado', failed: 'Error',
+}
+const STAGES: Record<string, string> = {
+  'registry.engine_for': 'Preparar motor',
+  'asr.transcribe_complete': 'Reconocimiento de voz (total)',
+  'asr.model_load': 'Cargar modelo en la GPU',
+  'audio.decode': 'Extraer audio del archivo',
+  'asr.prepare_decode': 'Detectar voz (VAD) y preparar',
+  'asr.consume_generator': 'Transcribir en la GPU',
+  'subtitles.resegment': 'Dividir en subtítulos',
+  'subtitles.write_srt': 'Guardar archivo SRT',
+}
 const options = [{ code: 'auto', title: 'Automático' }, { code: 'es', title: 'Español' },
   { code: 'en', title: 'Inglés' }, { code: 'ja', title: 'Japonés' }, { code: 'zh', title: 'Chino' }]
 
-const fmt = (seconds: number) => new Date(Math.round(seconds * 1000)).toISOString().slice(11, 23)
-const prettyRate = (rate: number | null | undefined) => rate == null ? 'N/D' : `${(rate * 100).toFixed(2)}%`
+/** Los spans se guardan al cerrar (hijos antes que padre); mostrar padre → hijos. */
+function stagesInOrder(events: ProfileEvent[]) {
+  const ordered: ProfileEvent[] = []
+  let children: ProfileEvent[] = []
+  for (const e of events) {
+    if (e.depth === 0) { ordered.push(e, ...children); children = [] } else children.push(e)
+  }
+  return [...ordered, ...children]
+}
+
 
 export function App() {
-  const [tab, setTab] = useState<Tab>('workspace')
+  const { route, job: jobId, navigate } = useLocation()
+  const player = usePlayer()
   const [models, setModels] = useState<Model[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [model, setModel] = useState('small')
   const [language, setLanguage] = useState('auto')
   const [device, setDevice] = useState('cuda')
   const [compute, setCompute] = useState('float16')
-  const [reference, setReference] = useState('')
-  const [evaluation, setEvaluation] = useState<Evaluation | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -31,12 +57,13 @@ export function App() {
     return () => window.clearInterval(id)
   }, [])
 
-  const job = jobs.find(j => j.id === selected) || jobs[0]
+  const job = jobs.find(j => j.id === jobId) || jobs[0]
+  const page = PAGES[route]
   const transcript = job?.transcript
 
   async function submit() {
     if (!file) return
-    setBusy(true); setError(null); setEvaluation(null)
+    setBusy(true); setError(null)
     try {
       const data = new FormData()
       data.set('file', file)
@@ -45,19 +72,9 @@ export function App() {
       data.set('device', device)
       data.set('compute_type', compute)
       const result = await api.create(data)
-      setSelected(result.id)
+      navigate({ job: result.id })
       setJobs(prev => [result, ...prev])
       setFile(null)
-    } catch (e) { setError(String(e)) }
-    finally { setBusy(false) }
-  }
-
-  async function validate() {
-    if (!transcript || !reference.trim()) return
-    setBusy(true); setError(null)
-    try {
-      setEvaluation(await api.evaluate(reference, transcript.text,
-        ['en', 'es', 'ja', 'zh'].includes(transcript.language) ? transcript.language : 'es'))
     } catch (e) { setError(String(e)) }
     finally { setBusy(false) }
   }
@@ -66,24 +83,24 @@ export function App() {
     <aside className="sidebar">
       <div className="brand"><span className="brand-icon">S<span>✦</span></span><div><strong>SubDub</strong><small>TITLER / LOCAL AI</small></div></div>
       <div className="sidenav-label">WORKSPACE</div>
-      <button className={`nav ${tab === 'workspace' ? 'active' : ''}`} onClick={() => setTab('workspace')}><span>▣</span> Transcripciones</button>
-      <button className={`nav ${tab === 'quality' ? 'active' : ''}`} onClick={() => setTab('quality')}><span>◎</span> Quality Lab</button>
-      <button className={`nav ${tab === 'profiling' ? 'active' : ''}`} onClick={() => setTab('profiling')}><span>▥</span> Performance Lab</button>
+      {(Object.keys(ROUTES) as Route[]).map(r =>
+        <a key={r} href={`/${r}${job ? `?trabajo=${job.id}` : ''}`} className={`nav ${route === r ? 'active' : ''}`}
+          onClick={e => { e.preventDefault(); navigate({ route: r }) }}><span>{PAGES[r].icon}</span> {ROUTES[r]}</a>)}
       <div className="sidenav-label gap">HISTORIAL</div>
       <div className="history">{jobs.length === 0 ? <p className="muted small">Aún no hay trabajos.</p> : jobs.map(j =>
-        <button className={`history-item ${job?.id === j.id ? 'chosen' : ''}`} key={j.id} onClick={() => {setSelected(j.id); setEvaluation(null)}}>
-          <span className="ellipsis">{j.original_name}</span><small>{j.status}</small>
+        <button className={`history-item ${job?.id === j.id ? 'chosen' : ''}`} key={j.id} onClick={() => navigate({ job: j.id })}>
+          <span className="ellipsis">{j.original_name}</span><small>{STATUS[j.status]}</small>
         </button>)}</div>
       <div className="sidebar-foot"><div className="online-dot"/> BACKEND LOCAL <small>v0.1.0</small></div>
     </aside>
 
     <main className="main">
-      <header className="topbar"><div className="breadcrumb">PROYECTOS <b>/</b> {tab === 'workspace' ? 'Transcripción' : tab === 'quality' ? 'Quality Lab' : 'Performance Lab'}</div><div className="top-right"><span className="chip">🔒 Offline-ready</span><span className="avatar">SD</span></div></header>
+      <header className="topbar"><div className="breadcrumb">SUBDUB <b>/</b> {ROUTES[route]}</div><div className="top-right"><span className="chip">🔒 Offline-ready</span><span className="avatar">SD</span></div></header>
       <div className="page">
         {error && <div role="alert" className="error">{error}<button onClick={() => setError(null)}>✕</button></div>}
-        <div className="heading"><div><div className="eyebrow">AUDIO INTELLIGENCE · LOCAL GPU</div><h1>{tab === 'workspace' ? 'Estudio de transcripción' : tab === 'quality' ? 'Laboratorio de calidad' : 'Análisis de rendimiento'}</h1><p className="subtitle">{tab === 'workspace' ? 'Convierte audio y video en subtítulos con modelos ejecutados en tu equipo.' : tab === 'quality' ? 'Evalúa la precisión frente a una referencia humana.' : 'Inspecciona tiempos por operación y el factor de tiempo real.'}</p></div><span className="status-pill"><i/> Procesamiento local</span></div>
+        <div className="heading"><div><div className="eyebrow">AUDIO INTELLIGENCE · LOCAL GPU</div><h1>{page.title}</h1><p className="subtitle">{page.subtitle}</p></div><span className="status-pill"><i/> Procesamiento local</span></div>
 
-        {tab === 'workspace' && <>
+        {route === 'transcribir' && <>
           <div className="two-col">
             <section className="panel"><div className="panel-head"><h2>01 <span>· Nueva transcripción</span></h2><span className="step">INPUT</span></div>
               <label className="dropzone" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); setFile(e.dataTransfer.files[0] || null) }}>
@@ -95,10 +112,11 @@ export function App() {
             </section>
             <section className="panel"><div className="panel-head"><h2>02 <span>· Vista previa</span></h2><span className="step">OUTPUT</span></div>
               {!job ? <div className="empty"><div className="empty-image">⌘</div><h3>Tu transcripción aparecerá aquí</h3><p>Carga un archivo para comenzar.</p></div> : <>
-                <div className="job-summary"><div><span>ARCHIVO</span><strong title={job.original_name}>{job.original_name}</strong></div><span className={`badge ${job.status}`}>{job.status}</span></div>
+                <div className="job-summary"><div><span>ARCHIVO</span><strong title={job.original_name}>{job.original_name}</strong></div><span className={`badge ${job.status}`}>{STATUS[job.status]}</span></div>
                 {job.status === 'failed' ? <p className="error-text">{job.error}</p> : job.status !== 'completed' ? <div className="processing"><div className="spinner"/> En cola o procesando en la GPU…</div> : <>
                   <div className="metrics"><div><small>IDIOMA</small><b>{transcript?.language.toUpperCase()}</b></div><div><small>TIEMPO ASR</small><b>{transcript?.elapsed_seconds.toFixed(2)} s</b></div><div><small>RTF</small><b>{transcript?.rtf?.toFixed(3) ?? 'N/D'}</b></div></div>
-                  <div className="segments">{transcript?.segments.map((s, i) => <div className="segment" key={i}><span>{fmt(s.start)} → {fmt(s.end)}</span><p>{s.text}</p></div>)}</div>
+                  <MediaPlayer job={job} player={player} />
+                  <CueList segments={transcript?.segments ?? []} time={player.time} onCueClick={i => player.seek(transcript!.segments[i].start, true)} />
                   <a className="download-btn" href={api.subtitles(job.id)}>↓ Descargar subtítulos .SRT</a>
                 </>}
               </>}
@@ -106,17 +124,16 @@ export function App() {
           </div>
         </>}
 
-        {tab === 'quality' && <div className="two-col">
-          <section className="panel"><div className="panel-head"><h2>01 <span>· Referencia humana</span></h2><span className="step">GROUND TRUTH</span></div><p className="panel-desc">Pega la transcripción revisada manualmente. Se compara con el trabajo seleccionado.</p>
-            <textarea value={reference} onChange={e => setReference(e.target.value)} placeholder="Transcribe aquí exactamente lo que dice el hablante…" rows={11} />
-            <p className="hint">Trabajo actual: {job?.original_name ?? 'Ninguno'} · Idioma detectado: {transcript?.language ?? 'N/D'}</p>
-            <button className="primary-btn" disabled={!reference.trim() || !transcript || busy} onClick={validate}>◎ Evaluar precisión →</button>
-          </section><section className="panel"><div className="panel-head"><h2>02 <span>· Reporte de errores</span></h2><span className="step">ACCURACY</span></div>
-            {!evaluation ? <div className="empty"><div className="empty-image">◎</div><h3>Esperando evaluación</h3><p>Selecciona una transcripción y añade una referencia humana.</p></div> : <><div className="quality-number">{prettyRate(evaluation.normalized[evaluation.primary_metric]?.rate)}<span>{evaluation.primary_metric.toUpperCase()} normalizado</span></div><div className="quality-grid"><div>RAW CER<strong>{prettyRate(evaluation.raw.cer?.rate)}</strong></div><div>NORM CER<strong>{prettyRate(evaluation.normalized.cer?.rate)}</strong></div><div>RAW WER<strong>{prettyRate(evaluation.raw.wer?.rate)}</strong></div><div>NORM WER<strong>{prettyRate(evaluation.normalized.wer?.rate)}</strong></div></div><p className="hint">Política: {evaluation.normalization}. Cuanto menor la tasa, mejor.</p></>}
-          </section>
-        </div>}
-        {tab === 'profiling' && <div className="panel"><div className="panel-head"><h2>Desglose de operaciones</h2><span className="step">PROFILING</span></div>
-          {!job?.profiling ? <div className="empty"><div className="empty-image">▥</div><h3>No hay trazas disponibles</h3><p>Completa una transcripción para registrar las etapas.</p></div> : <><div className="metrics perf-metrics"><div><small>TRABAJO</small><b>{job.original_name}</b></div><div><small>TIEMPO ASR</small><b>{job.transcript?.elapsed_seconds.toFixed(3)} s</b></div><div><small>REAL-TIME FACTOR</small><b>{job.transcript?.rtf?.toFixed(3) ?? 'N/D'}</b></div></div><table className="profiler-table"><thead><tr><th>Operación</th><th>Duración</th><th>Contribución relativa</th></tr></thead><tbody>{job.profiling.map((e, i) => <tr key={i}><td>{e.name}</td><td>{e.milliseconds.toFixed(2)} ms</td><td><div className="bar-track"><div className="bar" style={{width: `${Math.min(100, 100 * e.milliseconds / Math.max(1, ...job.profiling!.map(x => x.milliseconds)))}%`}} /></div></td></tr>)}</tbody></table><p className="hint">Los spans miden paredes de CPU/proceso; kernels CUDA requieren NVIDIA Nsight externo.</p></>}
+        {route === 'precision' && <QualityPage jobs={jobs} job={job} onSelect={id => navigate({ job: id })} />}
+        {route === 'rendimiento' && <div className="panel"><div className="panel-head"><h2>Tiempo por etapa</h2><span className="step">{job?.original_name ?? 'SIN TRABAJO'}</span></div>
+          {!job?.profiling || !job.transcript ? <div className="empty"><div className="empty-image">▥</div><h3>No hay mediciones todavía</h3><p>Completa una transcripción para ver cuánto tardó cada etapa.</p></div> : <>
+            <div className="metrics perf-metrics">
+              <div><small>DURACIÓN DEL AUDIO</small><b>{job.transcript.duration_seconds ? `${(job.transcript.duration_seconds / 60).toFixed(1)} min` : 'N/D'}</b></div>
+              <div><small>TIEMPO DE PROCESO</small><b>{job.transcript.elapsed_seconds.toFixed(1)} s</b></div>
+              <div><small>VELOCIDAD</small><b>{job.transcript.rtf ? `${(1 / job.transcript.rtf).toFixed(0)}× tiempo real` : 'N/D'}</b></div>
+            </div>
+            <table className="profiler-table"><thead><tr><th>Etapa</th><th>Duración</th><th>Peso relativo</th></tr></thead><tbody>{stagesInOrder(job.profiling).map((e, i) => <tr key={i} className={e.depth ? 'sub' : ''}><td title={e.name}>{e.depth ? '↳ ' : ''}{STAGES[e.name] ?? e.name}</td><td>{e.milliseconds >= 1000 ? `${(e.milliseconds / 1000).toFixed(2)} s` : `${e.milliseconds.toFixed(1)} ms`}</td><td><div className="bar-track"><div className="bar" style={{width: `${Math.min(100, 100 * e.milliseconds / Math.max(1, ...job.profiling!.map(x => x.milliseconds)))}%`}} /></div></td></tr>)}</tbody></table>
+            <p className="hint">«Cargar modelo» solo ocurre en el primer trabajo de cada modelo; después queda en memoria. Velocidad: cuántos minutos de audio se procesan por cada minuto real.</p></>}
         </div>}
         <footer><span>SubDub-Titler · Clean Architecture + faster-whisper</span><span>EN · ES · JA · ZH</span></footer>
       </div>

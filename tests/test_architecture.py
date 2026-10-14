@@ -18,7 +18,8 @@ def test_registry_is_open_for_extension(tmp_path: Path):
         TranscriptionRequest(audio, "dummy", device="cpu", compute_type="int8")
     )
     assert result.transcript.text == "Prueba"
-    assert result.events[-1].name == "asr.transcribe_complete"
+    assert [e.name for e in result.events if e.depth == 0] == [
+        "registry.engine_for", "asr.transcribe_complete", "subtitles.resegment"]
 
 
 def test_cache_separates_model_device_and_precision(tmp_path: Path):

@@ -44,8 +44,32 @@ def diagnostics() -> list[Check]:
         result.append(Check("CTranslate2 CUDA", True, ", ".join(sorted(supported))))
     except Exception as exc:
         result.append(Check("CTranslate2 CUDA", False, f"{type(exc).__name__}: {exc}"))
+    result.extend(_dubbing_checks())
     # Verificar bibliotecas es orientativo: solo una inferencia prueba la cadena entera.
     return result
+
+
+def _dubbing_checks() -> list[Check]:
+    """Extra `dub` opcional: PyTorch con kernels para esta GPU (Blackwell exige cu128)."""
+    try:
+        importlib.metadata.version("omnivoice")
+    except importlib.metadata.PackageNotFoundError:
+        return [Check("Doblaje (extra dub)", True, "no instalado; opcional")]
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return [Check("PyTorch CUDA", False, f"torch {torch.__version__} sin CUDA")]
+        major, minor = torch.cuda.get_device_capability()
+        arch = f"sm_{major}{minor}"
+        supported = arch in torch.cuda.get_arch_list()
+        checks = [Check("PyTorch CUDA", supported,
+                        f"torch {torch.__version__}, CUDA {torch.version.cuda}, {arch} "
+                        f"{'compilado' if supported else 'SIN kernels: usa ruedas cu128'}")]
+    except Exception as exc:
+        checks = [Check("PyTorch CUDA", False, f"{type(exc).__name__}: {exc}")]
+    checks.append(Check("Licencias de pesos", True,
+                        "OmniVoice y NLLB: CC-BY-NC (uso no comercial); clonar voces con permiso"))
+    return checks
 
 
 def diagnostic_json() -> str:

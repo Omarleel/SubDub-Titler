@@ -4,6 +4,7 @@ Cálculo exacto de sustituciones, eliminaciones e inserciones mediante distancia
 Levenshtein con dos filas. Memoria O(len(predicción)); tiempo O(N*M): evaluar
 fragmentos/datasets controlados, no documentos gigantes sin segmentación.
 """
+from collections import Counter
 from dataclasses import asdict, dataclass
 import re
 import unicodedata
@@ -92,3 +93,37 @@ def evaluate(reference: str, hypothesis: str, language: str) -> dict:
                                   _unitize(hyp, language, metric))
             output[variant][metric] = counts.to_dict()
     return output
+
+
+def _char_ngrams(text: str, order: int) -> list[Counter]:
+    compact = "".join(text.split())
+    return [Counter(compact[i:i + n] for i in range(len(compact) - n + 1))
+            for n in range(1, order + 1)]
+
+
+def chrf(hypotheses: list[str], references: list[str], order: int = 6, beta: int = 2) -> float:
+    """chrF de corpus (0–100), igual que sacreBLEU 2.x por defecto: n-gramas de caracteres
+    1..6 sin espacios, estadísticas sumadas sobre el corpus y beta=2 (pesa más el recall).
+    Métrica de traducción frente a una referencia humana; no depende del idioma."""
+    if len(hypotheses) != len(references):
+        raise ValueError("Hipótesis y referencias deben tener la misma longitud")
+    totals = [[0, 0, 0] for _ in range(order)]  # [hipótesis, referencia, coincidencias]
+    for hypothesis, reference in zip(hypotheses, references, strict=True):
+        for n, (hyp, ref) in enumerate(zip(_char_ngrams(hypothesis, order),
+                                           _char_ngrams(reference, order), strict=True)):
+            # Como sacreBLEU: sin n-gramas de referencia de ese orden no cuentan los de hipótesis.
+            totals[n][0] += sum(hyp.values()) if ref else 0
+            totals[n][1] += sum(ref.values())
+            totals[n][2] += sum((hyp & ref).values())
+    precisions, recalls = [], []
+    for n_hyp, n_ref, n_match in totals:
+        if n_hyp and n_ref:  # orden efectivo: se ignoran órdenes sin n-gramas
+            precisions.append(n_match / n_hyp)
+            recalls.append(n_match / n_ref)
+    if not precisions:
+        return 0.0
+    precision, recall = sum(precisions) / len(precisions), sum(recalls) / len(recalls)
+    factor = beta ** 2
+    if not precision + recall:
+        return 0.0
+    return 100 * (1 + factor) * precision * recall / (factor * precision + recall)

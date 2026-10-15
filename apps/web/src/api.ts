@@ -3,12 +3,58 @@ export type Transcript = {
   language: string; model_id: string; duration_seconds: number | null;
   text: string; segments: Segment[]; elapsed_seconds: number; rtf: number | null;
 }
-export type ProfileEvent = { name: string; milliseconds: number; parent: string | null; depth: number }
+export type ProfileEvent = {
+  name: string; milliseconds: number; parent: string | null; depth: number;
+  vram_peak_mb?: number | null; vram_device_mb?: number | null;
+}
+export type JobKind = 'transcribe' | 'dub' | 'dub-cue'
 export type Job = {
   id: string; original_name: string; status: 'queued' | 'running' | 'completed' | 'failed';
-  created_at: string; model_id: string; language: string; error: string | null;
-  transcript: Transcript | null; profiling: ProfileEvent[] | null
+  created_at: string; updated_at: string; model_id: string; language: string; error: string | null;
+  transcript: Transcript | null; profiling: ProfileEvent[] | null;
+  kind: JobKind; parent_id: string | null; params: Record<string, unknown>;
+  result: DubResult | null; stage: string | null; progress: number | null;
 }
+
+/** Espejo de domain/dubbing.py (report_to_dict). */
+export type DubCue = {
+  index: number; start: number; source_text: string; target_text: string;
+  slot_seconds: number; natural_seconds: number; target_seconds: number;
+  generated_seconds: number; speed: number; action: 'ok' | 'shorten'; speaker: string;
+  candidates: string[];
+}
+export type CueQuality = {
+  index: number; cer: number | null; cer_errors: number; cer_units: number;
+  asr_text: string; similarity: number | null; mos: number | null;
+}
+export type Gate = {
+  name: string; value: number | null; threshold: number; higher_is_better: boolean;
+  passed: boolean | null;
+}
+export type SyncReport = {
+  cues: number; within_tolerance: number; max_abs_error_ms: number; mean_abs_error_ms: number;
+  overlaps: number; speed_in_range: number; speed_min: number; speed_max: number;
+  shortened: number;
+}
+export type QualitySummary = {
+  cer: number | null; similarity: number | null; similarity_original: number | null;
+  mos: number | null; mos_original: number | null; background_wpm: number | null;
+  lufs: number | null; true_peak: number | null;
+}
+export type DubResult = {
+  track: DubCue[]; sync: SyncReport;
+  reference: { start: number; end: number; text: string };
+  outputs: Record<string, string>; quality: QualitySummary | null;
+  cue_quality: CueQuality[]; gates: Gate[]; cue?: DubCue;
+  references?: Record<string, { start: number; end: number; text: string }>;
+}
+export type DubOptions = {
+  target_language: string; num_step: number; tts_batch: number; n_best: number;
+  separator: string | null; evaluate: boolean; tts_engine: string; translator: string;
+  diarize: boolean; max_speakers: number;
+}
+export type Component = { id: string; kind: string; description: string; license: string }
+export type Ratings = { ratings: Record<string, { score: number; note: string | null }>; count: number; mean: number | null }
 export type Model = { id: string; backend: string; languages: string[]; description: string }
 export type Counts = {
   substitutions: number; deletions: number; insertions: number;
@@ -36,6 +82,26 @@ export const api = {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reference, hypothesis, language }),
     }).then(r => unwrap<Evaluation>(r)),
+  createDub: (id: string, options: DubOptions) =>
+    fetch(`/api/v1/jobs/${id}/dub`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options),
+    }).then(r => unwrap<Job>(r)),
+  regenerate: (id: string, index: number, text: string) =>
+    fetch(`/api/v1/jobs/${id}/dub/cues/${index}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+    }).then(r => unwrap<Job>(r)),
+  rate: (id: string, index: number, score: number) =>
+    fetch(`/api/v1/jobs/${id}/dub/cues/${index}/rating`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ score }),
+    }).then(r => unwrap<Ratings>(r)),
+  ratings: (id: string) => fetch(`/api/v1/jobs/${id}/dub/ratings`).then(r => unwrap<Ratings>(r)),
+  dubComponents: () => fetch('/api/v1/dub/components')
+    .then(r => unwrap<{ languages: string[]; components: Component[] }>(r)),
+  /** `version` evita la caché del navegador tras regenerar un cue. */
+  dubArtifact: (id: string, artifact: 'video' | 'mix' | 'voice' | 'subtitles', version = '') =>
+    `/api/v1/jobs/${id}/dub/${artifact}${version ? `?v=${encodeURIComponent(version)}` : ''}`,
+  dubCueAudio: (id: string, index: number, version = '') =>
+    `/api/v1/jobs/${id}/dub/cues/${index}/audio${version ? `?v=${encodeURIComponent(version)}` : ''}`,
   subtitles: (id: string) => `/api/v1/jobs/${id}/subtitles`,
   media: (id: string) => `/api/v1/jobs/${id}/media`,
   vtt: (id: string) => `/api/v1/jobs/${id}/subtitles.vtt`,

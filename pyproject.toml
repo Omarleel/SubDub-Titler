@@ -26,6 +26,20 @@ asr = [
   # PyAV 19 eliminó av.open(metadata_errors=...), usado por faster-whisper 1.2.1.
   "av>=11,<19",
 ]
+# Doblaje: PyTorch cu128 (obligatorio para Blackwell sm_120) desde el índice de PyTorch:
+#   pip install -e ".[asr,dub]" --extra-index-url https://download.pytorch.org/whl/cu128
+# Verificado en el MISMO entorno que CTranslate2: en Windows torch trae sus propias DLL CUDA
+# en torch/lib y no declara paquetes nvidia-*; ambos runtimes conviven en un proceso.
+dub = [
+  "torch==2.11.0",
+  "torchaudio==2.11.0",
+  "omnivoice==0.2.1",  # omnivoice_fast depende de su API interna: cambiar con su benchmark
+  "demucs==4.1.0",
+  "s3prl==0.4.18",  # WavLM del evaluador de parecido de voz
+  "sacrebleu==2.6.0",
+  "soundfile>=0.13,<1",
+  "soxr>=0.5,<2",
+]
 profiling = ["nvtx==0.2.16"]
 dev = [
   "pytest>=8.4,<10",

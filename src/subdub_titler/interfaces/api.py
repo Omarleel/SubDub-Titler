@@ -13,9 +13,16 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from subdub_titler.application.jobs import LocalJobWorker
+from subdub_titler.application.dubbing import DubComponentFactory, DubUseCase
+from subdub_titler.application.jobs import (
+    DubCueJobHandler,
+    DubJobHandler,
+    LocalJobWorker,
+    TranscribeJobHandler,
+)
 from subdub_titler.application.quality import evaluate
 from subdub_titler.application.transcribe import TranscribeUseCase
+from subdub_titler.domain.dubbing import DUB_LANGUAGES
 from subdub_titler.domain.models import Segment, Transcript
 from subdub_titler.infrastructure.doctor import diagnostics
 from subdub_titler.infrastructure.registry import ModelRegistry, default_registry
@@ -33,13 +40,37 @@ MEDIA_TYPES = {
 EXTENSIONS = set(MEDIA_TYPES)
 
 
+class DubJobRequest(BaseModel):
+    target_language: str = Field(pattern="^(en|es|ja|zh)$")
+    tts_engine: str = "omnivoice"
+    translator: str = "nllb-600m"
+    separator: str | None = "htdemucs"
+    num_step: int = Field(16, ge=1, le=64)
+    tts_batch: int = Field(8, ge=1, le=64)
+    n_best: int = Field(4, ge=1, le=8)
+    evaluate: bool = True
+    diarize: bool = False
+    max_speakers: int = Field(4, ge=1, le=16)
+
+
+class CueEdit(BaseModel):
+    text: str = Field(min_length=1, max_length=1_000)
+
+
+class CueRating(BaseModel):
+    score: int = Field(ge=1, le=5)
+    note: str | None = Field(None, max_length=500)
+
+
 class EvaluationRequest(BaseModel):
     reference: str = Field(min_length=1, max_length=6_000)
     hypothesis: str = Field(max_length=6_000)
     language: str = Field(pattern="^(en|es|ja|zh)$")
 
 
-def create_app(home: Path | None = None, registry: ModelRegistry | None = None) -> FastAPI:
+def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
+               dub_factory: DubComponentFactory | None = None,
+               transcripts=None) -> FastAPI:
     home = home or Path(os.environ.get("SUBDUB_HOME", str(Path.home() / ".subdub-titler")))
     uploads = home / "uploads"
     output_dir = home / "outputs"
@@ -47,7 +78,18 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None) 
     output_dir.mkdir(parents=True, exist_ok=True)
     jobs = SqliteJobs(home / "jobs.sqlite3")
     registry = registry or default_registry()
-    worker = LocalJobWorker(jobs, TranscribeUseCase(registry), output_dir)
+    if dub_factory is None:
+        # Composición por defecto; los motores pesados se importan al primer uso.
+        from subdub_titler.infrastructure.dub_factory import AsrTranscripts, default_dub_factory
+        dub_factory = default_dub_factory(registry)
+        transcripts = transcripts or AsrTranscripts(registry)
+    dub_use_case = DubUseCase(transcripts, dub_factory)
+    dub_handler = DubJobHandler(dub_use_case, jobs, output_dir)
+    worker = LocalJobWorker(jobs, {
+        "transcribe": TranscribeJobHandler(TranscribeUseCase(registry), output_dir),
+        "dub": dub_handler,
+        "dub-cue": DubCueJobHandler(dub_use_case, jobs, dub_handler),
+    })
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -87,6 +129,7 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None) 
         language: Annotated[str, Form()] = "auto",
         device: Annotated[str, Form()] = "cuda",
         compute_type: Annotated[str, Form()] = "float16",
+        batch_size: Annotated[int, Form(ge=1, le=64)] = 16,
     ) -> dict:
         if model_id not in {m.id for m in registry.list_models()}:
             raise HTTPException(422, "Modelo no registrado")
@@ -112,7 +155,8 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None) 
                     target.write(chunk)
             if not length:
                 raise HTTPException(422, "Archivo vacío")
-            job = jobs.create(destination, original_name, model_id, language, device, compute_type)
+            job = jobs.create(destination, original_name, model_id, language, device,
+                              compute_type, params={"batch_size": batch_size})
             persisted = True
             worker.enqueue(job["id"])
             return job
@@ -125,8 +169,8 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None) 
             await file.close()
 
     @app.get("/api/v1/jobs")
-    def list_jobs() -> list[dict]:
-        return jobs.list()
+    def list_jobs(kind: str | None = None) -> list[dict]:
+        return jobs.list(kind=kind)
 
     @app.get("/api/v1/jobs/{identifier}")
     def get_job(identifier: str) -> dict:
@@ -169,6 +213,83 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None) 
             data["language"], data["model_id"], data["duration_seconds"],
         )
         return Response(VttRenderer().render(transcript), media_type="text/vtt")
+
+    # --- Doblaje ------------------------------------------------------------------------
+
+    def _completed(identifier: str, kind: str) -> dict:
+        job = jobs.get(identifier)
+        if job is None or job["kind"] != kind:
+            raise HTTPException(404, "Job no encontrado")
+        if job["status"] != "completed":
+            raise HTTPException(409, "El trabajo aún no está completado")
+        return job
+
+    @app.get("/api/v1/dub/components")
+    def dub_components() -> dict:
+        listing = getattr(dub_factory, "components", None)
+        return {"languages": list(DUB_LANGUAGES),
+                "components": listing() if callable(listing) else []}
+
+    @app.post("/api/v1/jobs/{identifier}/dub", status_code=202)
+    def create_dub(identifier: str, payload: DubJobRequest) -> dict:
+        parent = _completed(identifier, "transcribe")
+        if not Path(parent["file_path"]).is_file():
+            raise HTTPException(410, "El archivo original ya no está disponible")
+        job = jobs.create(Path(parent["file_path"]), parent["original_name"],
+                          parent["model_id"], parent["transcript"]["language"],
+                          parent["device"], parent["compute_type"], kind="dub",
+                          params=payload.model_dump(), parent_id=identifier)
+        worker.enqueue(job["id"])
+        return job
+
+    @app.get("/api/v1/jobs/{identifier}/dub/cues/{index}/audio")
+    def dub_cue_audio(identifier: str, index: int) -> FileResponse:
+        _completed(identifier, "dub")
+        path = dub_handler.workdir(identifier) / "cues" / f"{index:04d}.wav"
+        if not path.is_file():
+            raise HTTPException(404, "Cue no encontrado")
+        return FileResponse(path, media_type="audio/wav")
+
+    @app.post("/api/v1/jobs/{identifier}/dub/cues/{index}", status_code=202)
+    def regenerate_cue(identifier: str, index: int, payload: CueEdit) -> dict:
+        parent = _completed(identifier, "dub")
+        if not any(c["index"] == index for c in (parent["result"] or {}).get("track", [])):
+            raise HTTPException(404, "Cue no encontrado")
+        job = jobs.create(Path(parent["file_path"]), parent["original_name"],
+                          parent["model_id"], parent["language"], parent["device"],
+                          parent["compute_type"], kind="dub-cue",
+                          params={"index": index, "text": payload.text.strip()},
+                          parent_id=identifier)
+        worker.enqueue(job["id"])
+        return job
+
+    @app.post("/api/v1/jobs/{identifier}/dub/cues/{index}/rating")
+    def rate_cue(identifier: str, index: int, payload: CueRating) -> dict:
+        _completed(identifier, "dub")
+        jobs.rate(identifier, index, payload.score, payload.note)
+        return cue_ratings(identifier)
+
+    @app.get("/api/v1/jobs/{identifier}/dub/ratings")
+    def cue_ratings(identifier: str) -> dict:
+        _completed(identifier, "dub")
+        ratings = jobs.ratings(identifier)
+        scores = [r["score"] for r in ratings.values()]
+        return {"ratings": {str(k): v for k, v in ratings.items()}, "count": len(scores),
+                "mean": round(sum(scores) / len(scores), 3) if scores else None}
+
+    @app.get("/api/v1/jobs/{identifier}/dub/{artifact}")
+    def dub_artifact(identifier: str, artifact: str) -> FileResponse:
+        """Artefactos del doblaje: video (MP4 multipista), mix, voice o subtitles."""
+        job = _completed(identifier, "dub")
+        outputs = (job["result"] or {}).get("outputs", {})
+        if artifact not in ("video", "mix", "voice", "subtitles") or artifact not in outputs:
+            raise HTTPException(404, "Artefacto no disponible")
+        path = Path(outputs[artifact])
+        if not path.is_file():
+            raise HTTPException(410, "El artefacto ya no está disponible")
+        media_type = {".mp4": "video/mp4", ".flac": "audio/flac",
+                      ".srt": "application/x-subrip"}.get(path.suffix.lower())
+        return FileResponse(path, media_type=media_type)
 
     # En distribución el frontend compilado se sirve en el mismo puerto (sin CORS).
     # El dev server Vite usa proxy hacia 127.0.0.1:8000.

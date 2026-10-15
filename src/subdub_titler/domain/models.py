@@ -78,6 +78,8 @@ class ProfileEvent:
     milliseconds: float
     parent: str | None = None
     depth: int = 0
+    vram_peak_mb: float | None = None  # pico de memoria CUDA de PyTorch dentro del span
+    vram_device_mb: float | None = None  # memoria ocupada en la GPU al cerrar el span (todo)
 
 
 @dataclass(frozen=True, slots=True)

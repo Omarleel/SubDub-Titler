@@ -1,7 +1,8 @@
 from pathlib import Path
+
+from subdub_titler.application.transcribe import TranscribeUseCase
 from subdub_titler.domain.models import ModelDescriptor, Segment, Transcript, TranscriptionRequest
 from subdub_titler.infrastructure.registry import ModelRegistry
-from subdub_titler.application.transcribe import TranscribeUseCase
 
 
 class DummyEngine:
@@ -38,19 +39,67 @@ def test_cache_separates_model_device_and_precision(tmp_path: Path):
     assert calls == ["int8", "float32"]
 
 
-def test_domain_has_no_infrastructure_framework_imports():
-    """Regla básica de dependencias de Clean Architecture."""
+PACKAGE = Path(__file__).resolve().parents[1] / 'src' / 'subdub_titler'
+# Bibliotecas de motores/IO: solo pueden aparecer en adaptadores de infraestructura.
+HEAVY = {'faster_whisper', 'ctranslate2', 'torch', 'torchaudio', 'omnivoice', 'demucs',
+         'numpy', 'soundfile', 'soxr', 'transformers', 'huggingface_hub'}
+
+
+def _imports(module_file: Path) -> set[str]:
     import ast
-    from pathlib import Path
-    domain = Path(__file__).resolve().parents[1] / 'src' / 'subdub_titler' / 'domain'
-    forbidden = {'fastapi', 'faster_whisper', 'ctranslate2', 'sqlalchemy', 'torch', 'typer'}
-    for module_file in domain.glob('*.py'):
-        parsed = ast.parse(module_file.read_text(encoding='utf-8'))
-        for node in ast.walk(parsed):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                names = [node.module or '']
-            else:
-                continue
-            assert not forbidden.intersection(name.split('.')[0] for name in names), module_file
+    parsed = ast.parse(module_file.read_text(encoding='utf-8'))
+    names: set[str] = set()
+    for node in ast.walk(parsed):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            names.add(node.module or '')
+    return {name.split('.')[0] for name in names} | {name for name in names}
+
+
+def test_domain_has_no_infrastructure_framework_imports():
+    """Regla básica de dependencias de Clean Architecture: dominio solo stdlib."""
+    forbidden = HEAVY | {'fastapi', 'sqlalchemy', 'typer', 'pydantic', 'rich'}
+    for module_file in (PACKAGE / 'domain').glob('*.py'):
+        imports = _imports(module_file)
+        assert not forbidden & imports, module_file
+        assert not any(name.startswith('subdub_titler.') and
+                       not name.startswith('subdub_titler.domain') for name in imports), \
+            module_file
+
+
+def test_dubbing_use_cases_depend_on_ports_not_engines():
+    """Los casos de uso de doblaje no conocen motores, IO de audio ni la API."""
+    for name in ('dubbing.py', 'dub_quality.py', 'dub_bench.py', 'dub_corpus.py'):
+        imports = _imports(PACKAGE / 'application' / name)
+        assert not HEAVY & imports, name
+        assert not any(i.startswith(('subdub_titler.infrastructure',
+                                     'subdub_titler.interfaces')) for i in imports), name
+
+
+def test_engine_libraries_are_imported_lazily():
+    """Importar la API o la CLI no debe cargar torch/OmniVoice/Demucs (arranque rápido)."""
+    import subprocess
+    import sys
+    code = ("import sys, subdub_titler.interfaces.api, subdub_titler.interfaces.cli;"
+            "print(sorted(m for m in ('torch','omnivoice','demucs','ctranslate2') "
+            "if m in sys.modules))")
+    out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True,
+                         check=True, env={**__import__('os').environ,
+                                          'PYTHONPATH': str(PACKAGE.parent)}).stdout
+    assert out.strip() == '[]'
+
+
+def test_omnivoice_schedule_unmasks_every_token_once():
+    from subdub_titler.infrastructure.omnivoice_fast import _schedules
+    steps = [i / 16 for i in range(17)]
+    for length in (1, 7, 75):
+        schedule = _schedules(steps, [length], 8, 16)[0]
+        assert sum(schedule) == length * 8 and len(schedule) == 16
+
+
+def test_nllb_sentence_split():
+    from subdub_titler.infrastructure.nllb import split_sentences
+    assert split_sentences("What else? What else?") == ["What else?", "What else?"]
+    assert split_sentences("Hola") == ["Hola"]
+    assert split_sentences("今日は。元気？") == ["今日は。", "元気？"]

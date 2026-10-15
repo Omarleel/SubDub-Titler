@@ -10,6 +10,19 @@ wanted = {
     "faster-whisper": "1.2.1",
     "ctranslate2": "4.8.3",
 }
+# Extra opcional de doblaje: se verifica solo si está instalado.
+optional = {
+    "torch": "2.11.0+cu128",
+    "torchaudio": "2.11.0+cu128",
+    "omnivoice": "0.2.1",
+    "demucs": "4.1.0",
+}
+for package, expected in optional.items():
+    try:
+        importlib.metadata.version(package)
+        wanted[package] = expected
+    except importlib.metadata.PackageNotFoundError:
+        print(f"--   {package}: extra 'dub' no instalado")
 failed = False
 for package, expected in wanted.items():
     try:

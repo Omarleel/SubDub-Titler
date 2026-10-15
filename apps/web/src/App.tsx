@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type Job, type Model, type ProfileEvent } from './api'
+import { DubPage } from './DubPage'
 import { CueList, MediaPlayer, usePlayer } from './media'
 import { QualityPage } from './QualityPage'
 import { ROUTES, useLocation, type Route } from './router'
@@ -8,6 +9,7 @@ import * as ui from './ui'
 const PAGES: Record<Route, { icon: string; title: string; subtitle: string }> = {
   transcribir: { icon: '▣', title: 'Estudio de transcripción', subtitle: 'Convierte audio y video en subtítulos con modelos ejecutados en tu equipo.' },
   precision: { icon: '◎', title: 'Medir precisión', subtitle: 'Compara la transcripción automática con el texto correcto y calcula el porcentaje de acierto.' },
+  doblaje: { icon: '◐', title: 'Doblaje de voz', subtitle: 'Traduce y dobla con la voz clonada del hablante; mide sincronía, inteligibilidad y parecido de voz.' },
   rendimiento: { icon: '▥', title: 'Rendimiento', subtitle: 'Cuánto tardó cada etapa del proceso y qué tan rápido fue frente al tiempo real.' },
 }
 const STATUS: Record<Job['status'], string> = {
@@ -22,6 +24,33 @@ const STAGES: Record<string, string> = {
   'asr.consume_generator': 'Transcribir en la GPU',
   'subtitles.resegment': 'Dividir en subtítulos',
   'subtitles.write_srt': 'Guardar archivo SRT',
+  'dub.components': 'Preparar componentes de doblaje',
+  'dub.separate': 'Separar voz y fondo (total)',
+  'dub.separate.load': 'Cargar Demucs',
+  'dub.separate.apply': 'Separar voz y fondo en la GPU',
+  'dub.voice_prompt': 'Preparar la voz clonada',
+  'dub.tts.load': 'Cargar OmniVoice en la GPU',
+  'dub.translate': 'Traducir (total)',
+  'dub.translate.load': 'Cargar traductor NLLB',
+  'dub.fit': 'Ajustar traducciones a su tiempo',
+  'dub.tts.generate': 'Sintetizar la voz en la GPU',
+  'dub.save_cues': 'Guardar clips por subtítulo',
+  'dub.mix': 'Mezclar y normalizar sonoridad',
+  'dub.mux': 'Exportar video multipista',
+  'dub.eval': 'Medir calidad (total)',
+  'dub.eval.cues': 'Re-transcribir y puntuar el doblaje',
+  'dub.eval.original': 'Puntuar la voz original',
+  'dub.eval.background': 'Buscar voz residual en el fondo',
+  'dub.eval.load_sim': 'Cargar evaluador de parecido de voz',
+  'dub.eval.load_mos': 'Cargar evaluador UTMOS',
+  'dub.diarize': 'Detectar hablantes',
+  'dub.load_cues': 'Cargar clips existentes',
+  'dub.mix.place': 'Colocar la voz en su tiempo',
+  'dub.mix.level': 'Igualar nivel con la voz original',
+  'dub.mix.write_voice': 'Guardar pista de voz',
+  'dub.mix.background': 'Cargar el fondo',
+  'dub.mix.normalize': 'Normalizar sonoridad y limitar picos',
+  'dub.mix.measure': 'Medir sonoridad y pico real',
 }
 const SIDENAV_LABEL = 'text-[#66788f] text-[10px] tracking-[1.8px] font-bold mt-0 mx-[12px] mb-[14px] upto680:hidden'
 const FIELD_LABEL = 'text-[11px] text-[#96a8be] font-semibold'
@@ -67,9 +96,20 @@ export function App() {
     return () => window.clearInterval(id)
   }, [])
 
-  const job = jobs.find(j => j.id === jobId) || jobs[0]
+  // Las regeneraciones de un subtítulo son trabajos internos: no aparecen en el historial.
+  const visible = jobs.filter(j => j.kind !== 'dub-cue')
+  const transcriptions = visible.filter(j => (j.kind ?? 'transcribe') === 'transcribe')
+  const scope = route === 'doblaje' || route === 'rendimiento' ? visible : transcriptions
+  const selectedJob = jobs.find(j => j.id === jobId)
+  const job = (selectedJob && scope.includes(selectedJob) ? selectedJob : undefined)
+    ?? (selectedJob?.kind === 'dub' ? transcriptions.find(j => j.id === selectedJob.parent_id) : undefined)
+    ?? scope[0]
   const page = PAGES[route]
   const transcript = job?.transcript
+  const dubbing = job?.kind === 'dub' ? job.result : null
+  const dubAudio = dubbing ? dubbing.track.reduce((total, c) => total + c.generated_seconds, 0) : 0
+  const processMs = (job?.profiling ?? []).filter(e => e.depth === 0 && !e.name.startsWith('dub.eval')).reduce((t, e) => t + e.milliseconds, 0)
+  const ttsMs = job?.profiling?.find(e => e.name === 'dub.tts.generate')?.milliseconds
 
   async function submit() {
     if (!file) return
@@ -101,9 +141,9 @@ export function App() {
           className={`w-full text-left border-0 rounded-[9px] py-[13px] px-[12px] my-[1px] text-[13px] flex gap-[12px] items-center no-underline upto680:w-auto upto680:p-[9px] upto680:text-[11px] ${route === r ? 'bg-[#1c2639] text-white shadow-[inset_3px_0_#7b81ff]' : 'bg-transparent text-inherit hover:bg-[#1c2639] hover:text-white'}`}
           onClick={e => { e.preventDefault(); navigate({ route: r }) }}><span className={`text-[18px] ${route === r ? 'text-[#a1a6ff]' : 'text-[#75899f]'}`}>{PAGES[r].icon}</span> {ROUTES[r]}</a>)}
       <div className={`${SIDENAV_LABEL} mt-[39px]`}>HISTORIAL</div>
-      <div className="overflow-auto max-h-[40vh] upto680:hidden">{jobs.length === 0 ? <p className="text-[#7b8ca5] text-[12px]">Aún no hay trabajos.</p> : jobs.map(j =>
+      <div className="overflow-auto max-h-[40vh] upto680:hidden">{visible.length === 0 ? <p className="text-[#7b8ca5] text-[12px]">Aún no hay trabajos.</p> : visible.map(j =>
         <button className={`block w-full text-left border-0 rounded-[7px] py-[11px] px-[13px] ${job?.id === j.id ? 'bg-[#192338] text-[#f3f4ff]' : 'bg-transparent text-[#9aaec3] hover:bg-[#192338] hover:text-[#f3f4ff]'}`} key={j.id} onClick={() => navigate({ job: j.id })}>
-          <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-[12px]">{j.original_name}</span><small className="block text-[#71859e] text-[10px] mt-[4px]">{STATUS[j.status]}</small>
+          <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-[12px]">{j.original_name}</span><small className="block text-[#71859e] text-[10px] mt-[4px]">{j.kind === 'dub' ? `Doblaje ${String(j.params?.target_language ?? '').toUpperCase()} · ` : ''}{STATUS[j.status]}</small>
         </button>)}</div>
       <div className="mt-auto pt-[15px] px-[10px] pb-[4px] text-[10px] font-bold tracking-[1px] text-[#99b0bb] flex items-center gap-[8px] upto680:hidden"><div className={ui.liveDot}/> BACKEND LOCAL <small className="ml-auto text-[#67758e]">v0.1.0</small></div>
     </aside>
@@ -161,9 +201,18 @@ export function App() {
           </div>
         </>}
 
-        {route === 'precision' && <QualityPage jobs={jobs} job={job} onSelect={id => navigate({ job: id })} />}
+        {route === 'precision' && <QualityPage jobs={transcriptions} job={job} onSelect={id => navigate({ job: id })} />}
+        {route === 'doblaje' && <DubPage jobs={jobs} job={job} onSelect={id => navigate({ job: id })} />}
         {route === 'rendimiento' && <div className={ui.panel}><div className={ui.panelHead}><h2 className={ui.panelTitle}>Tiempo por etapa</h2><span className={ui.step}>{job?.original_name ?? 'SIN TRABAJO'}</span></div>
-          {!job?.profiling || !job.transcript ? <div className={ui.empty}><div className={ui.emptyIcon}>▥</div><h3 className={ui.emptyTitle}>No hay mediciones todavía</h3><p className={ui.emptyText}>Completa una transcripción para ver cuánto tardó cada etapa.</p></div> : <>
+          {job?.kind === 'dub' && dubbing && job.profiling ? <>
+            <div className={`${ui.metrics} max-w-[760px]`}>
+              <div className={ui.metric}><small className={ui.metricLabel}>VOZ DOBLADA</small><b className={ui.metricValue}>{(dubAudio / 60).toFixed(1)} min · {dubbing.track.length} subtítulos</b></div>
+              <div className={ui.metric}><small className={ui.metricLabel}>TIEMPO DE PROCESO</small><b className={ui.metricValue}>{(processMs / 1000).toFixed(1)} s</b></div>
+              <div className={ui.metric}><small className={ui.metricLabel}>RTF SÍNTESIS</small><b className={ui.metricValue}>{ttsMs && dubAudio ? (ttsMs / 1000 / dubAudio).toFixed(3) : 'N/D'}</b></div>
+            </div>
+            <table className="w-full border-collapse text-[#cad5e8] text-[12px]"><thead><tr><th className={TH}>Etapa</th><th className={TH}>Duración</th><th className={TH}>VRAM pico (PyTorch)</th><th className={TH}>GPU ocupada</th><th className={TH}>Peso relativo</th></tr></thead><tbody>{stagesInOrder(job.profiling).map((e, i) => <tr key={i}><td className={`${TD} ${e.depth ? 'pl-[26px] text-[#9fb0c6]' : ''}`} title={e.name}>{e.depth ? '↳ ' : ''}{STAGES[e.name] ?? e.name}</td><td className={TD}>{e.milliseconds >= 1000 ? `${(e.milliseconds / 1000).toFixed(2)} s` : `${e.milliseconds.toFixed(1)} ms`}</td><td className={TD}>{e.vram_peak_mb != null ? `${(e.vram_peak_mb / 1024).toFixed(2)} GB` : '—'}</td><td className={TD}>{e.vram_device_mb ? `${(e.vram_device_mb / 1024).toFixed(1)} GB` : '—'}</td><td className={TD}><div className="h-[8px] bg-[#222c40] rounded-[10px] w-full overflow-hidden"><div className="h-full rounded-[8px] bg-[linear-gradient(90deg,#6d73f9,#5cbbd7)]" style={{width: `${Math.min(100, 100 * e.milliseconds / Math.max(1, ...job.profiling!.map(x => x.milliseconds)))}%`}} /></div></td></tr>)}</tbody></table>
+            <p className={ui.hint}>RTF de síntesis: segundos de cálculo por segundo de voz generada (menor es mejor). «VRAM pico» mide solo la memoria de PyTorch; «GPU ocupada» es la memoria total de la tarjeta al terminar la etapa (incluye CTranslate2 y otros programas). La evaluación de calidad no cuenta en el tiempo de proceso.</p></>
+          : !job?.profiling || !job.transcript ? <div className={ui.empty}><div className={ui.emptyIcon}>▥</div><h3 className={ui.emptyTitle}>No hay mediciones todavía</h3><p className={ui.emptyText}>Completa una transcripción para ver cuánto tardó cada etapa.</p></div> : <>
             <div className={`${ui.metrics} max-w-[760px]`}>
               <div className={ui.metric}><small className={ui.metricLabel}>DURACIÓN DEL AUDIO</small><b className={ui.metricValue}>{job.transcript.duration_seconds ? `${(job.transcript.duration_seconds / 60).toFixed(1)} min` : 'N/D'}</b></div>
               <div className={ui.metric}><small className={ui.metricLabel}>TIEMPO DE PROCESO</small><b className={ui.metricValue}>{job.transcript.elapsed_seconds.toFixed(1)} s</b></div>

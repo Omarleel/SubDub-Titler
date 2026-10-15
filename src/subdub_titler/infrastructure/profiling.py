@@ -1,10 +1,10 @@
 """Profiling con spans de baja sobrecarga y cProfile opcional."""
 import cProfile
-import os
-from contextlib import nullcontext
 import json
-import pstats
+import os
+import sys
 import time
+from contextlib import nullcontext
 from contextvars import ContextVar
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -21,10 +21,56 @@ def active_profiler() -> "SpanProfiler | None":
     return _active.get()
 
 
-class SpanProfiler:
+class TorchCudaMemory:
+    """Pico de memoria CUDA de PyTorch por span, con spans anidados.
+
+    No importa torch: si el proceso aún no lo cargó o CUDA no se inicializó, no mide (el ASR con
+    CTranslate2 no pasa por el asignador de PyTorch y no aparece aquí).
+    """
+
     def __init__(self) -> None:
+        self._running: list[int] = []
+
+    @staticmethod
+    def _cuda():
+        torch = sys.modules.get("torch")
+        if torch is None or not torch.cuda.is_available() or not torch.cuda.is_initialized():
+            return None
+        return torch.cuda
+
+    def enter(self) -> None:
+        cuda = self._cuda()
+        if cuda is not None:
+            if self._running:
+                self._running[-1] = max(self._running[-1], cuda.max_memory_allocated())
+            cuda.reset_peak_memory_stats()
+        self._running.append(0)
+
+    def exit(self) -> float | None:
+        running = self._running.pop()
+        cuda = self._cuda()
+        if cuda is None:
+            return round(running / 2**20, 1) if running else None
+        peak = max(running, cuda.max_memory_allocated())
+        if self._running:
+            self._running[-1] = max(self._running[-1], peak)
+        cuda.reset_peak_memory_stats()
+        return round(peak / 2**20, 1)
+
+    def device_used(self) -> float | None:
+        """Ocupación total de la GPU (todos los procesos y runtimes, incluido CTranslate2)."""
+        cuda = self._cuda()
+        if cuda is None:
+            return None
+        free, total = cuda.mem_get_info()
+        return round((total - free) / 2**20, 1)
+
+
+class SpanProfiler:
+    def __init__(self, memory: TorchCudaMemory | None = None) -> None:
         self._stack: list[str] = []
         self._events: list[ProfileEvent] = []
+        self._memory = memory or TorchCudaMemory()
 
     @contextmanager
     def activate(self) -> Iterator[None]:
@@ -39,6 +85,7 @@ class SpanProfiler:
         parent = self._stack[-1] if self._stack else None
         depth = len(self._stack)
         self._stack.append(name)
+        self._memory.enter()
         start = time.perf_counter_ns()
         # Opcional: anotar rangos CUDA en Nsight Systems; no dep principal.
         annotation = nullcontext()
@@ -55,7 +102,9 @@ class SpanProfiler:
         finally:
             elapsed = (time.perf_counter_ns() - start) / 1e6
             self._stack.pop()
-            self._events.append(ProfileEvent(name, round(elapsed, 3), parent, depth))
+            vram = self._memory.exit()
+            self._events.append(ProfileEvent(name, round(elapsed, 3), parent, depth, vram,
+                                             self._memory.device_used()))
 
     @property
     def events(self) -> tuple[ProfileEvent, ...]:

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 export const ROUTES = {
   transcribir: 'Transcribir',
   precision: 'Medir precisión',
+  doblaje: 'Doblaje',
   rendimiento: 'Rendimiento',
 } as const
 export type Route = keyof typeof ROUTES

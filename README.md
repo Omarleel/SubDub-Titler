@@ -1,12 +1,12 @@
 # SubDub-Titler
 
-**Subtitulado offline multilingüe y laboratorio local de precisión/rendimiento.**
-Backend Python con Clean Architecture + SOLID y motor `faster-whisper`/CTranslate2;
-CLI Typer, API FastAPI, React + TypeScript. Diseñado para NVIDIA RTX 5060 Ti.
+**Subtitulado y doblaje de voz offline multilingüe, con laboratorio local de precisión/rendimiento.**
+Backend Python con Clean Architecture + SOLID y motor `faster-whisper`/CTranslate2; doblaje con
+traducción NLLB, clonación de voz OmniVoice y separación Demucs; CLI Typer, API FastAPI, React + TypeScript.
+Diseñado y validado en NVIDIA RTX 5060 Ti 16 GB (Windows 11).
 
-> **Estado: v0.1.0 / MVP de fases 1–4.** El núcleo, la API, UI y pruebas unitarias
-> están implementados. GPU real, Qwen3-ASR, alineación forzada externa, editor
-> profesional y optimización CUDA profunda quedan pendientes de validación/desarrollo.
+> **Estado:** subtitulado (fases 0–7) y doblaje de voz (fases 8–13) implementados y medidos en GPU real.
+> Pendiente: segundo motor ASR (Qwen3-ASR), alineación forzada externa, editor profesional con forma de onda.
 
 ## Instalación — Conda
 
@@ -75,6 +75,72 @@ spans mediante `--profile reports/run.json`. `benchmark` ejecuta la inferencia
 **completa** (consume el generador de faster-whisper), calienta el modelo y calcula
 mediana/dispersiones. `RTF` usa la duración del audio cuando el backend la informa.
 
+## Doblaje de voz
+
+Del video original a un MP4 con una **pista doblada con la voz clonada del hablante**, sincronizada con los
+subtítulos y mezclada con el fondo original (la pista original se conserva como segunda pista).
+
+```text
+transcripción ─► traducción NLLB-200 (n-best, frase a frase) ─► ajuste a la duración de cada subtítulo
+     │                                                                │
+     └─► separación voz/fondo (Demucs) ─► voz de referencia por hablante ─► OmniVoice (duración exacta)
+                                                                            │
+                     mezcla −16 LUFS, nivel de la voz original ◄────────────┘ ─► MP4 multipista + SRT
+```
+
+Instalación (mismo entorno; PyTorch cu128 es obligatorio para la arquitectura Blackwell de la RTX 50):
+
+```bash
+python -m pip install -r requirements/dub.txt
+python -m pip check
+subdub doctor --strict-gpu          # incluye «PyTorch CUDA … sm_120 compilado»
+```
+
+```bash
+subdub dub video.mp4 --to es --evaluate                 # doblaje + validación de calidad
+subdub dub video.mp4 --to es --diarize --evaluate       # varios hablantes: una voz clonada por hablante
+subdub dub-bench video.mp4 --to es --num-step 8,16,32 --tts-batch 1,8,16   # matriz A/B velocidad + calidad
+subdub tts-eval --from-report video.dub-es/report.json --limit 40 --save-manifest corpus/tts-es.jsonl
+subdub tts-eval --manifest corpus/tts-es.jsonl --baseline reports/tts-eval-base.json   # regresión
+subdub translate-eval --manifest corpus/mt.jsonl --translator nllb-600m             # chrF
+```
+
+En la UI, la sección **Doblaje** lanza trabajos sobre una transcripción, muestra el progreso por etapa, los
+umbrales de calidad y un banco de trabajo para escuchar original/doblaje, editar la traducción de un subtítulo,
+regenerarlo (Ctrl+Enter) y puntuarlo de 1 a 5.
+
+**Cómo se valida** (cada doblaje con `--evaluate`, y cada optimización con `dub-bench`/`tts-eval`):
+
+| Dimensión | Métrica | Umbral |
+|---|---|---|
+| Inteligibilidad | CER «ida y vuelta»: Whisper large-v3 transcribe la voz doblada y se compara con la traducción | ≤ 3 % (es/en), ≤ 8 % (ja/zh) |
+| Parecido de voz | WavLM-ECAPA (protocolo del paper de OmniVoice), relativo al parecido de la voz original consigo misma | ≥ 85 % |
+| Naturalidad | UTMOS22 del doblaje frente a la voz original separada | ≥ −0.1 |
+| Sincronía | error de duración por subtítulo, solapes, velocidad de habla | ≥ 95 % en ±120 ms/5 %, 0 solapes |
+| Separación | palabras/min que el ASR reconoce en el fondo | ≤ 2 |
+| Mezcla | sonoridad integrada y pico real (`ebur128`) | −16 ± 1 LUFS, ≤ −1 dBTP |
+| Traducción | chrF frente a referencias humanas (idéntico a sacreBLEU) | sin regresión |
+
+Resultados en RTX 5060 Ti (`subdub dub-bench`, video real de 23 min, inglés → español):
+
+| Variante (video 23 min, 187 cues, en→es) | Síntesis | RTF | Pipeline* | CER | SIM | Adoptable |
+|---|---|---|---|---|---|---|
+| OmniVoice original, lote 8 | 98.7 s | 0.225 | 117 s | 6.2 % | 0.562 | línea base |
+| OmniVoice original, lote 16 | 107.3 s | 0.244 | 126 s | 6.8 % | 0.565 | sí |
+| **CFG separado, lote 8 (predeterminado)** | **55.1 s** | **0.125** | **74 s** | 6.2 % | 0.568 | sí |
+| CFG separado, lote 16 | 57.9 s | 0.132 | 95 s | 7.1 % | 0.560 | sí |
+
+\*Sin ASR ni separación (reutilizados entre variantes). Doblaje completo en frío: 139 s + 70 s de evaluación;
+pico de GPU 11.2 GB. Umbrales cumplidos 7/9: el CER ida y vuelta (6.2 %) lo elevan los subtítulos de ≤1.5 s y la
+velocidad en rango queda en 94.7 % (10 de 187 cues no caben ni a 1.2×: candidatos para editar en la UI).
+
+Motores registrados (extensibles sin tocar los casos de uso): `omnivoice` (predeterminado), `omnivoice-base`
+(decodificación original, para A/B), `voxcpm2` (opcional: `pip install voxcpm==2.0.3`), `nllb-600m`, `nllb-1.3b`,
+`htdemucs`, `htdemucs_ft`.
+
+**Licencias y uso responsable:** los pesos de OmniVoice y NLLB son **CC-BY-NC** (uso no comercial); VoxCPM2 es
+Apache-2.0. Clona solo voces con permiso de su titular; el MP4 marca la pista como «Doblaje sintético».
+
 ## Frontend
 
 ```bash
@@ -107,13 +173,15 @@ Visita **http://127.0.0.1:5173**. Vite usa proxy `/api` a la API local.
 - Trazas wall-clock por etapa y cProfile opcional; benchmark reproducible en CLI.
 - Adaptadores ASR aislados, registro abierto a nuevos motores, tests de contratos.
 - API escucha localhost; carga restringida a extensiones y archivos de 2 GiB.
+- Doblaje de voz con clonación, varios hablantes, edición y regeneración por subtítulo y validación automática.
 
 ## Limitaciones explícitas
 
-- Sin pruebas de CUDA en la RTX 5060 Ti del usuario en este entorno de entrega.
 - La app no incorpora todavía Qwen/Kotoba ni votación multi-modelo.
+- Doblaje: la diarización no separa voces solapadas. Pico de VRAM ~11 GB en el video de prueba (cada etapa
+  libera sus modelos al terminar); con menos de 12 GB conviene `--no-evaluate`.
 - Timestamps son los que proporciona faster-whisper; no hay aligner externo.
-- Profiling nativo GPU individual (Nsight), NVTX, VRAM por operación: fase siguiente.
+- VRAM por etapa medida solo para PyTorch (el ASR usa CTranslate2, fuera de su asignador).
 - La UI es un dashboard operativo, aún no un editor visual detallado de subtítulos.
 - La validación lingüística completa de una película debe segmentarse en clips;
   la API limita a 6000 caracteres por referencia para evitar cálculos excesivos.
@@ -124,9 +192,9 @@ Visita **http://127.0.0.1:5173**. Vite usa proxy `/api` a la API local.
 
 ```text
 src/subdub_titler/
-  domain/          # entidades, contratos y reglas independientes
-  application/     # casos de uso ASR, evaluación y trabajos
-  infrastructure/  # faster-whisper, SQLite, profiling, subtítulos, NVIDIA doctor
+  domain/          # entidades, puertos y reglas puras (tiempos de doblaje, umbrales), solo stdlib
+  application/     # casos de uso: ASR, doblaje, evaluación de calidad, benchmark, corpus, trabajos
+  infrastructure/  # faster-whisper, OmniVoice, NLLB/CT2, Demucs, ffmpeg, evaluadores, SQLite, profiling
   interfaces/      # CLI Typer y API FastAPI
 apps/web/          # React 19 + TypeScript
 requirements/      # extras y runtime GPU opcional
@@ -140,6 +208,9 @@ No usar `pip install` sobre el entorno base. Para cambiar versiones,
 ## Fuentes técnicas
 
 - faster-whisper: https://github.com/SYSTRAN/faster-whisper
+- OmniVoice: https://github.com/k2-fsa/OmniVoice (arXiv 2604.00688); VoiceStudio: https://github.com/debpalash/VoiceStudio
+- NLLB-200: https://huggingface.co/facebook/nllb-200-distilled-600M · Demucs: https://github.com/adefossez/demucs
+- VoxCPM: https://github.com/OpenBMB/VoxCPM · NTREX-128: https://github.com/MicrosoftTranslator/NTREX
 - CTranslate2: https://opennmt.net/CTranslate2/
 - Conda + pip: https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html
 - NVIDIA CUDA GPU: https://developer.nvidia.com/cuda/gpus

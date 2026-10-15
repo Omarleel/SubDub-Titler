@@ -22,7 +22,8 @@ DEFAULT_POLICY = CuePolicy()
 def _cue(words: list[Word], policy: CuePolicy) -> Segment:
     text = "".join(w.text for w in words).strip()
     start = words[0].start
-    return Segment(start, max(words[-1].end, start + policy.min_duration), text)
+    # Se conservan las palabras: el doblaje parte cues por cambio de hablante con ellas.
+    return Segment(start, max(words[-1].end, start + policy.min_duration), text, tuple(words))
 
 
 def resegment(transcript: Transcript, policy: CuePolicy = DEFAULT_POLICY) -> Transcript:

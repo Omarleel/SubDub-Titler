@@ -1,0 +1,4 @@
+# Doblaje (TTS OmniVoice + NLLB + Demucs + evaluadores). Mismo entorno que el ASR.
+# PyTorch cu128 no está en PyPI: se toma del índice oficial de PyTorch.
+--extra-index-url https://download.pytorch.org/whl/cu128
+-e .[asr,dub,dev]

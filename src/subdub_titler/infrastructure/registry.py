@@ -40,6 +40,13 @@ class ModelRegistry:
             self._engine_cache[key] = self._factories[request.model_id](request)
         return self._engine_cache[key]
 
+    def cached_engine(self, model_id: str, device: str, compute_type: str) -> ASREngine | None:
+        """Motor ya construido (comparte pesos cargados con otros usos, p. ej. evaluación)."""
+        return self._engine_cache.get((model_id, device, compute_type))
+
+    def remember(self, model_id: str, device: str, compute_type: str, engine: ASREngine) -> None:
+        self._engine_cache[(model_id, device, compute_type)] = engine
+
 
 def default_registry() -> ModelRegistry:
     from subdub_titler.infrastructure.whisper import FasterWhisperAdapter

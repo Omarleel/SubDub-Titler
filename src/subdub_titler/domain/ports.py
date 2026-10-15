@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from .dubbing import AudioClip, Candidate
+from .dubbing import Ambience, AudioClip, Candidate
 from .models import ModelDescriptor, Transcript, TranscriptionRequest
 
 
@@ -66,7 +66,10 @@ class VoiceCloner(Protocol):
         ...
 
     def synthesize(self, texts: Sequence[str], durations: Sequence[float], language: str,
-                   voice: object) -> list[AudioClip]: ...
+                   voice: object, variant: int = 0) -> list[AudioClip]:
+        """`variant` > 0: generación alternativa para reintentos (otra semilla). Misma
+        variante, mismo texto y voz = misma salida."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,13 +97,16 @@ class MixResult:
     mix: Path
     lufs: float | None
     true_peak: float | None
+    bed: Path | None = None  # fondo + ambiente conservado (lo que no es voz doblada)
 
 
 class Mixer(Protocol):
     def render(self, placements: Sequence[tuple[float, AudioClip]], background: Path | None,
                duration: float, out_dir: Path,
-               voice_reference: Path | None = None) -> MixResult:
-        """`voice_reference`: voz original separada; la doblada se iguala a su sonoridad."""
+               voice_reference: Path | None = None,
+               ambience: Ambience | None = None) -> MixResult:
+        """`voice_reference`: voz original separada; la doblada se iguala a su sonoridad.
+        `ambience`: tramos de esa voz sin diálogo que se suman al fondo."""
         ...
 
 

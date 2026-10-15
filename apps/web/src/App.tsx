@@ -45,6 +45,8 @@ const STAGES: Record<string, string> = {
   'dub.eval.load_mos': 'Cargar evaluador UTMOS',
   'dub.diarize': 'Detectar hablantes',
   'dub.load_cues': 'Cargar clips existentes',
+  'dub.reference_probe': 'Elegir la mejor voz de referencia',
+  'dub.verify': 'Verificar inteligibilidad y reintentar',
   'dub.mix.place': 'Colocar la voz en su tiempo',
   'dub.mix.level': 'Igualar nivel con la voz original',
   'dub.mix.write_voice': 'Guardar pista de voz',

@@ -86,11 +86,11 @@ def row(**quality):
 
 
 def test_bench_flags_quality_regressions_with_tolerance():
-    base = row(cer=0.02, similarity=0.6, mos=3.0, within_tolerance=1.0)
-    assert regressions(row(cer=0.025, similarity=0.59, mos=2.95, within_tolerance=0.99),
+    base = row(cer=0.02, similarity_slot=0.6, mos=3.0, within_tolerance=1.0)
+    assert regressions(row(cer=0.025, similarity_slot=0.59, mos=2.95, within_tolerance=0.99),
                        base) == ()
-    found = regressions(row(cer=0.05, similarity=0.5, mos=3.0, within_tolerance=1.0), base)
-    assert [f.split(":")[0] for f in found] == ["cer", "similarity"]
+    found = regressions(row(cer=0.05, similarity_slot=0.5, mos=3.0, within_tolerance=1.0), base)
+    assert [f.split(":")[0] for f in found] == ["cer", "similarity_slot"]
 
 
 def test_components_release_gpu_after_their_stage(tmp_path: Path):

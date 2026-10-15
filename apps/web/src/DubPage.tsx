@@ -14,7 +14,7 @@ const PRESETS = [
 const STAGE_LABEL: Record<string, string> = {
   inicio: 'Preparando', transcribir: 'Transcribiendo', separar: 'Separando voz y fondo',
   voz: 'Preparando la voz clonada', traducir: 'Traduciendo', sintetizar: 'Sintetizando la voz',
-  mezclar: 'Mezclando y exportando', evaluar: 'Midiendo la calidad', listo: 'Listo',
+  verificar: 'Verificando que se entiende', mezclar: 'Mezclando y exportando', evaluar: 'Midiendo la calidad', listo: 'Listo',
 }
 const GATES: Record<string, { label: string; format: (v: number) => string }> = {
   cer_ida_vuelta: { label: 'Inteligibilidad (CER ida y vuelta)', format: v => pct(v) },
@@ -81,6 +81,7 @@ export function DubPage({ jobs, job, onSelect }: Props) {
   const [options, setOptions] = useState<DubOptions>({
     target_language: 'es', num_step: 16, tts_batch: 8, n_best: 4, separator: 'htdemucs',
     evaluate: true, tts_engine: 'omnivoice', translator: 'nllb-600m', diarize: false, max_speakers: 4,
+    merge_fragments: true, verify_attempts: 1, reference_candidates: 1,
   })
   const [engines, setEngines] = useState<Component[]>([])
   useEffect(() => { api.dubComponents().then(r => setEngines(r.components)).catch(() => setEngines([])) }, [])
@@ -311,10 +312,11 @@ export function DubPage({ jobs, job, onSelect }: Props) {
                 <div className={COUNT}><dt className={COUNT_LABEL}>Generada</dt><dd className={COUNT_VALUE}>{seconds(cue.generated_seconds)}</dd></div>
                 <div className={COUNT}><dt className={COUNT_LABEL}>Velocidad</dt><dd className={`${COUNT_VALUE} ${cue.action === 'shorten' ? 'text-bad' : ''}`}>{cue.speed.toFixed(2)}×</dd></div>
               </dl>
+              {!!cue.attempts && <p className="text-[12px] text-[#9fb0c6] mt-[8px] mb-0">Regenerado automáticamente {cue.attempts} {cue.attempts === 1 ? 'vez' : 'veces'} porque la primera versión no se entendía bien.</p>}
               {cue.action === 'shorten' && <p className="text-[12px] text-warn mt-[8px] mb-0">No cabe ni a la velocidad máxima: prueba una traducción más corta.</p>}
               {cueQuality && <dl className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-[8px] mt-[8px] mx-0 mb-0">
                 <div className={COUNT}><dt className={COUNT_LABEL}>CER ida y vuelta</dt><dd className={COUNT_VALUE}>{cueQuality.cer == null ? 'N/D' : pct(cueQuality.cer)}</dd></div>
-                <div className={COUNT}><dt className={COUNT_LABEL}>Parecido de voz</dt><dd className={COUNT_VALUE}>{cueQuality.similarity?.toFixed(2) ?? 'N/D'}</dd></div>
+                <div className={COUNT}><dt className={COUNT_LABEL}>Parecido con el original</dt><dd className={COUNT_VALUE}>{cueQuality.similarity_slot?.toFixed(2) ?? cueQuality.similarity?.toFixed(2) ?? 'N/D'}</dd></div>
                 <div className={COUNT}><dt className={COUNT_LABEL}>UTMOS</dt><dd className={COUNT_VALUE}>{cueQuality.mos?.toFixed(2) ?? 'N/D'}</dd></div>
               </dl>}
               {cueQuality && <p className="text-[12px] text-[#9fb0c6] mt-[8px] mb-0 leading-[1.5]"><span className="text-[10px] tracking-[1px] text-[#7185a1] block mb-[3px]">LO QUE ENTIENDE EL ASR</span>{cueQuality.asr_text || '—'}</p>}

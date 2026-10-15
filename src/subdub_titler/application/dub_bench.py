@@ -13,7 +13,7 @@ from subdub_titler.domain.dubbing import DubReport, DubRequest
 from subdub_titler.domain.models import ProfileEvent, Transcript
 
 # Tolerancias de no-regresión frente a la línea base (positivo = permitido empeorar).
-TOLERANCES = {"cer": 0.01, "similarity": 0.02, "mos": 0.10, "within_tolerance": 0.02}
+TOLERANCES = {"cer": 0.01, "similarity_slot": 0.02, "mos": 0.10, "within_tolerance": 0.02}
 
 
 @dataclass(frozen=True, slots=True)

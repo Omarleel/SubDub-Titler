@@ -41,7 +41,7 @@ class FasterWhisperAdapter:
         return self._model
 
     def transcribe_clips(self, clips: Sequence[AudioClip], language: str,
-                         batch_size: int = 16) -> list[str]:
+                         batch_size: int = 16, beam_size: int = 5) -> list[str]:
         """Clips cortos en memoria (voz sintetizada), sin VAD y con idioma fijo.
 
         Se concatenan y se pasan como `clip_timestamps`: el pipeline batched decodifica cada
@@ -67,7 +67,7 @@ class FasterWhisperAdapter:
         if self._batched is None:
             self._batched = BatchedInferencePipeline(self._model)
         segments, _ = self._batched.transcribe(
-            np.concatenate(parts), language=language, beam_size=5, batch_size=batch_size,
+            np.concatenate(parts), language=language, beam_size=beam_size, batch_size=batch_size,
             clip_timestamps=[{"start": s, "end": max(e, s + 0.05)} for s, e in bounds],
         )
         starts = [s for s, _ in bounds]

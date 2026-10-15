@@ -62,7 +62,12 @@ class OmniVoiceSettings:
     position_temperature: float = 5.0
     seed: int | None = 0  # misma semilla + mismas formas = misma salida (reproducible)
     split_cfg: bool = True  # ver omnivoice_fast
+    retry_num_step: int | None = None  # pasos de los reintentos (None = 2 × num_step)
     fade_seconds: float = 0.05
+    # RMS al que se lleva la referencia. OmniVoice solo sube las referencias suaves (< 0.1) y
+    # genera al nivel de la referencia: con una voz original muy alta (-9 dBFS) la salida
+    # pasaba de 1.0 y se recortaba. None = referencia sin tocar.
+    reference_rms: float | None = 0.1
 
 
 class OmniVoiceCloner:
@@ -93,6 +98,10 @@ class OmniVoiceCloner:
         import torch
         model = self._model()
         waveform = torch.as_tensor(reference.samples, dtype=torch.float32)
+        if self.settings.reference_rms is not None:
+            rms = float(waveform.square().mean().sqrt())
+            if rms > self.settings.reference_rms:
+                waveform = waveform * (self.settings.reference_rms / rms)
         with torch.inference_mode():
             return model.create_voice_clone_prompt((waveform, reference.sample_rate),
                                                    ref_text=text or None)
@@ -106,17 +115,21 @@ class OmniVoiceCloner:
             text, voice.ref_text, ref_frames))) / frame_rate for text in texts]
 
     def synthesize(self, texts: Sequence[str], durations: Sequence[float], language: str,
-                   voice: object) -> list[AudioClip]:
+                   voice: object, variant: int = 0) -> list[AudioClip]:
         import torch
         if not texts:
             return []
         model = self._model()
         if self.settings.seed is not None:
-            torch.manual_seed(self.settings.seed)
+            torch.manual_seed(self.settings.seed + variant)
+        # Reintentos: otra semilla y el doble de pasos. A/B en la misma ejecución (video de
+        # 23 min): CER 4.75 % sin reintentos, 4.07 % reintentando a 16 pasos, 3.44 % a 32.
+        steps = self.settings.num_step if variant == 0 else (
+            self.settings.retry_num_step or min(64, self.settings.num_step * 2))
         with torch.inference_mode():
             audios = model.generate(
                 text=list(texts), language=language, voice_clone_prompt=[voice] * len(texts),
-                duration=[float(d) for d in durations], num_step=self.settings.num_step,
+                duration=[float(d) for d in durations], num_step=steps,
                 guidance_scale=self.settings.guidance_scale,
                 position_temperature=self.settings.position_temperature,
                 class_temperature=0.0,

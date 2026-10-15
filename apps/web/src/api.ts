@@ -21,11 +21,11 @@ export type DubCue = {
   index: number; start: number; source_text: string; target_text: string;
   slot_seconds: number; natural_seconds: number; target_seconds: number;
   generated_seconds: number; speed: number; action: 'ok' | 'shorten'; speaker: string;
-  candidates: string[];
+  candidates: string[]; attempts?: number;
 }
 export type CueQuality = {
   index: number; cer: number | null; cer_errors: number; cer_units: number;
-  asr_text: string; similarity: number | null; mos: number | null;
+  asr_text: string; similarity: number | null; similarity_slot?: number | null; mos: number | null;
 }
 export type Gate = {
   name: string; value: number | null; threshold: number; higher_is_better: boolean;
@@ -38,6 +38,7 @@ export type SyncReport = {
 }
 export type QualitySummary = {
   cer: number | null; similarity: number | null; similarity_original: number | null;
+  similarity_slot?: number | null;
   mos: number | null; mos_original: number | null; background_wpm: number | null;
   lufs: number | null; true_peak: number | null;
 }
@@ -47,11 +48,13 @@ export type DubResult = {
   outputs: Record<string, string>; quality: QualitySummary | null;
   cue_quality: CueQuality[]; gates: Gate[]; cue?: DubCue;
   references?: Record<string, { start: number; end: number; text: string }>;
+  speech?: [number, number][];  // habla original; el resto del stem de voz se conserva como ambiente
 }
 export type DubOptions = {
   target_language: string; num_step: number; tts_batch: number; n_best: number;
   separator: string | null; evaluate: boolean; tts_engine: string; translator: string;
   diarize: boolean; max_speakers: number;
+  merge_fragments: boolean; verify_attempts: number; reference_candidates: number;
 }
 export type Component = { id: string; kind: string; description: string; license: string }
 export type Ratings = { ratings: Record<string, { score: number; note: string | null }>; count: number; mean: number | null }

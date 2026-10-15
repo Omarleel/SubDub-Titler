@@ -27,6 +27,7 @@ class FakeCloner:
 
     def __init__(self) -> None:
         self.batches: list[int] = []
+        self.variants: list[int] = []
 
     def prepare_voice(self, reference, text):
         return {"text": text, "seconds": reference.duration}
@@ -34,8 +35,9 @@ class FakeCloner:
     def natural_seconds(self, texts, language, voice):
         return [0.08 * len(t) for t in texts]
 
-    def synthesize(self, texts, durations, language, voice):
+    def synthesize(self, texts, durations, language, voice, variant=0):
         self.batches.append(len(texts))
+        self.variants.append(variant)
         return [AudioClip([0.1] * int(round(d * RATE)), RATE) for d in durations]
 
 
@@ -58,9 +60,12 @@ class FakeAudioStore:
 class FakeMixer:
     def __init__(self) -> None:
         self.placements = []
+        self.ambience = None
 
-    def render(self, placements, background, duration, out_dir, voice_reference=None):
+    def render(self, placements, background, duration, out_dir, voice_reference=None,
+               ambience=None):
         self.placements = list(placements)
+        self.ambience = ambience
         out_dir.mkdir(parents=True, exist_ok=True)
         voice, mix = out_dir / "dub_voice.flac", out_dir / "dub_mix.flac"
         voice.write_bytes(b"fLaC")

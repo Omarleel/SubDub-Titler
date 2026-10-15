@@ -44,6 +44,112 @@ def cues_from_transcript(transcript: Transcript) -> tuple[DubCue, ...]:
                  for i, s in enumerate(s for s in transcript.segments if s.text.strip()))
 
 
+Span = tuple[float, float]
+
+
+def speech_spans(cues: Sequence[DubCue], padding: float = 0.15,
+                 bridge: float = 0.3) -> tuple[Span, ...]:
+    """Intervalos con habla original: cada palabra (o el cue entero si no hay tiempos por
+    palabra) ampliada `padding` por lado; huecos menores que `bridge` se unen."""
+    raw = sorted((w.start - padding, w.end + padding) for c in cues
+                 for w in (c.words or (Word(c.start, c.end, c.source_text),)))
+    merged: list[list[float]] = []
+    for start, end in raw:
+        if merged and start - merged[-1][1] < bridge:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([max(0.0, start), end])
+    return tuple((round(a, 3), round(b, 3)) for a, b in merged)
+
+
+def ambience_spans(speech: Sequence[Span], duration: float,
+                   min_seconds: float = 0.25) -> tuple[Span, ...]:
+    """Complemento de `speech` en [0, duration]: donde el stem de voz no tiene diálogo
+    (pájaros, pasos, respiraciones…) y debe conservarse en la mezcla."""
+    spans, cursor = [], 0.0
+    for start, end in sorted(speech):
+        if start - cursor >= min_seconds:
+            spans.append((round(cursor, 3), round(min(start, duration), 3)))
+        cursor = max(cursor, end)
+    if duration - cursor >= min_seconds:
+        spans.append((round(cursor, 3), round(duration, 3)))
+    return tuple(spans)
+
+
+@dataclass(frozen=True, slots=True)
+class Ambience:
+    """Partes de una pista que se conservan en la mezcla (`spans` en segundos)."""
+    source: Path
+    spans: tuple[Span, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MergePolicy:
+    """Une fragmentos de frase antes de traducir y sintetizar.
+
+    La segmentación de subtítulos corta por duración/caracteres y deja fragmentos ("So",
+    "embarrassing.") en ranuras de < 1 s donde ninguna traducción cabe y la voz sale sin prosodia.
+    Un cue se une al siguiente si no termina frase (o es muy corto) y el hueco es breve.
+    """
+    min_seconds: float = 1.2  # un cue más corto se une aunque termine frase
+    max_gap: float = 0.4
+    max_seconds: float = 8.0
+    max_chars: int = 160
+
+
+DEFAULT_MERGE = MergePolicy()
+
+
+def merge_fragments(cues: Sequence[DubCue],
+                    policy: MergePolicy = DEFAULT_MERGE) -> tuple[DubCue, ...]:
+    """Fusiona hacia delante cues incompletos o muy cortos con el siguiente del mismo hablante.
+    Conserva palabras con tiempos y reasigna índices consecutivos."""
+    def complete(cue: DubCue) -> bool:
+        return cue.source_text.rstrip().endswith(SENTENCE_END)
+
+    merged: list[DubCue] = []
+    for cue in cues:
+        if merged:
+            last = merged[-1]
+            joinable = (last.speaker == cue.speaker
+                        and cue.start - last.end <= policy.max_gap
+                        and cue.end - last.start <= policy.max_seconds
+                        and len(last.source_text) + len(cue.source_text) < policy.max_chars)
+            wants = not complete(last) or last.duration < policy.min_seconds \
+                or cue.duration < policy.min_seconds
+            if joinable and wants:
+                merged[-1] = replace(last, end=cue.end, words=last.words + cue.words,
+                                     source_text=f"{last.source_text} {cue.source_text}".strip())
+                continue
+        merged.append(cue)
+    return tuple(replace(c, index=i) for i, c in enumerate(merged))
+
+
+@dataclass(frozen=True, slots=True)
+class VerifyPolicy:
+    """Reintento de cues poco inteligibles: si un ASR (distinto del que mide la calidad final)
+    entiende mal la voz generada, se regenera con otra variante y se conserva la mejor."""
+    max_cer: float = 0.15
+    probe_cues: int = 16  # cues de muestra para elegir la referencia de voz
+    probe_min_seconds: float = 2.0  # el parecido de voz de clips cortos es poco fiable
+    probe_max_seconds: float = 6.0
+
+
+DEFAULT_VERIFY = VerifyPolicy()
+
+
+def probe_indices(durations: Sequence[float], policy: VerifyPolicy = DEFAULT_VERIFY) -> list[int]:
+    """Posiciones repartidas a lo largo del medio, con duración intermedia (las frases muy
+    cortas o muy largas no representan bien la voz)."""
+    eligible = [i for i, d in enumerate(durations)
+                if policy.probe_min_seconds <= d <= policy.probe_max_seconds] \
+        or list(range(len(durations)))
+    if len(eligible) <= policy.probe_cues:
+        return eligible
+    step = len(eligible) / policy.probe_cues
+    return [eligible[int(k * step)] for k in range(policy.probe_cues)]
+
+
 @dataclass(frozen=True, slots=True)
 class Window:
     """Tramo de un cue (palabras consecutivas) que se diariza como una unidad."""
@@ -111,8 +217,11 @@ class TimingPolicy:
     """Límites de ajuste de la voz sintetizada a la ranura del subtítulo."""
     min_speed: float = 0.85  # más lento suena arrastrado
     max_speed: float = 1.20  # más rápido pierde inteligibilidad: hay que acortar el texto
-    max_borrow: float = 0.50  # segundos de silencio tomables tras el cue
-    max_advance: float = 0.25  # segundos que la voz puede adelantarse al cue
+    # Silencio tomable tras el cue y adelanto del inicio. Con 0.5/0.25 s el 44 % de las frases
+    # de un video real iba a más de max_speed (hasta ×2.2, voz atropellada y robótica); con
+    # 1.5/0.4 s queda el 17 % (máx. ×1.8) a cambio de ~1 s de cola sobre el original.
+    max_borrow: float = 1.50
+    max_advance: float = 0.40
     min_gap: float = 0.05  # separación mínima entre voces consecutivas
     fill_slot: bool = False  # True: estirar hasta min_speed para llenar la ranura
     tolerance_s: float = 0.12
@@ -255,16 +364,17 @@ def estimate_seconds_by_rate(text: str, reference_text: str, reference_seconds: 
     return max(0.3, _spoken_units(text) / rate)
 
 
-def pick_reference(cues: Sequence[DubCue], min_seconds: float = 3.0, max_seconds: float = 10.0,
-                   max_pause: float = 1.0, clean_gap: float = 0.25, margin: float = 0.2,
-                   speaker: str | None = None) -> ReferenceSpan:
-    """Fragmento de voz para clonar (OmniVoice recomienda 3–10 s).
+def reference_candidates(cues: Sequence[DubCue], min_seconds: float = 3.0,
+                         max_seconds: float = 10.0, max_pause: float = 1.0,
+                         clean_gap: float = 0.25, margin: float = 0.2,
+                         speaker: str | None = None, limit: int = 1) -> list[ReferenceSpan]:
+    """Fragmentos de voz para clonar (OmniVoice recomienda 3–10 s), mejores primero.
 
     Preferencia: cues contiguos que empiezan y terminan en frontera de frase (texto acabado en
-    puntuación y silencio de al menos `clean_gap` alrededor); entre ellos, el más largo. Una
+    puntuación y silencio de al menos `clean_gap` alrededor); entre ellos, los más largos. Una
     referencia cortada a media frase hace que el modelo la continúe en la voz generada.
     Con `speaker`, el fragmento solo contiene cues de ese hablante (nunca cruza la voz de
-    otro). El intervalo se amplía hasta `margin` dentro del silencio vecino.
+    otro). Los candidatos no se solapan. El intervalo se amplía hasta `margin` en el silencio.
     """
     if not any(speaker is None or c.speaker == speaker for c in cues):
         raise ValueError("No hay voz para tomar como referencia")
@@ -283,7 +393,7 @@ def pick_reference(cues: Sequence[DubCue], min_seconds: float = 3.0, max_seconds
     def own(i: int) -> bool:
         return speaker is None or cues[i].speaker == speaker
 
-    best: tuple[bool, float, int, int] | None = None
+    options: list[tuple[bool, float, int, int]] = []
     for first in range(len(cues)):
         if not own(first):
             continue
@@ -294,19 +404,33 @@ def pick_reference(cues: Sequence[DubCue], min_seconds: float = 3.0, max_seconds
             if duration > max_seconds:
                 break
             if duration >= min_seconds:
-                key = (clean(first, last), duration, first, last)
-                if best is None or key[:2] > best[:2]:
-                    best = key
-    if best is None:
-        first = last = max((i for i in range(len(cues)) if own(i)),
-                           key=lambda i: cues[i].duration)
-    else:
-        _, _, first, last = best
-    start = cues[first].start - min(margin, max(0.0, gap_before(first)) / 2)
-    end = cues[last].end + min(margin, gap_after(last) / 2)
-    end = min(end, start + max_seconds + 2 * margin)
-    return ReferenceSpan(round(max(0.0, start), 3), round(end, 3),
-                         " ".join(c.source_text for c in cues[first:last + 1]))
+                options.append((clean(first, last), duration, first, last))
+    options.sort(key=lambda o: (o[0], o[1]), reverse=True)
+    chosen: list[tuple[int, int]] = []
+    for _, _, first, last in options:
+        if all(last < a or first > b for a, b in chosen):
+            chosen.append((first, last))
+        if len(chosen) == limit:
+            break
+    if not chosen:
+        index = max((i for i in range(len(cues)) if own(i)), key=lambda i: cues[i].duration)
+        chosen = [(index, index)]
+    spans = []
+    for first, last in chosen:
+        start = cues[first].start - min(margin, max(0.0, gap_before(first)) / 2)
+        end = cues[last].end + min(margin, gap_after(last) / 2)
+        end = min(end, start + max_seconds + 2 * margin)
+        spans.append(ReferenceSpan(round(max(0.0, start), 3), round(end, 3),
+                                   " ".join(c.source_text for c in cues[first:last + 1])))
+    return spans
+
+
+def pick_reference(cues: Sequence[DubCue], min_seconds: float = 3.0, max_seconds: float = 10.0,
+                   max_pause: float = 1.0, clean_gap: float = 0.25, margin: float = 0.2,
+                   speaker: str | None = None) -> ReferenceSpan:
+    """El mejor candidato de `reference_candidates`."""
+    return reference_candidates(cues, min_seconds, max_seconds, max_pause, clean_gap, margin,
+                                speaker, limit=1)[0]
 
 
 def speakers_by_presence(cues: Sequence[DubCue]) -> list[str]:
@@ -331,6 +455,7 @@ class DubbedCue:
     action: FitAction
     speaker: str = "S0"
     candidates: tuple[str, ...] = ()
+    attempts: int = 0  # regeneraciones tras la verificación de inteligibilidad
 
     @property
     def error_seconds(self) -> float:
@@ -394,6 +519,13 @@ class DubRequest:
     evaluate: bool = False
     diarize: bool = False  # varios hablantes: una voz clonada por hablante
     max_speakers: int = 4
+    merge_fragments: bool = True  # unir fragmentos de frase antes de traducir
+    # Reintentos de cues poco inteligibles (0 = sin verificar). A/B: 1 intento CER 3.54 % en 55 s,
+    # 2 intentos 3.44 % en 68 s (+0.1 puntos por +13 s): se queda en 1.
+    verify_attempts: int = 1
+    # Referencias sondeadas por hablante (1 = la mejor por regla). Medido en el video de prueba:
+    # el sondeo eligió la misma que la regla (+42 s sin mejora); queda como opción.
+    reference_candidates: int = 1
 
     def __post_init__(self) -> None:
         if self.target_language not in DUB_LANGUAGES:
@@ -410,6 +542,10 @@ class DubRequest:
             raise ValueError("Dispositivo inválido")
         if not 1 <= self.max_speakers <= 16:
             raise ValueError("max_speakers debe estar entre 1 y 16")
+        if not 0 <= self.verify_attempts <= 5:
+            raise ValueError("verify_attempts debe estar entre 0 y 5")
+        if not 1 <= self.reference_candidates <= 8:
+            raise ValueError("reference_candidates debe estar entre 1 y 8")
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,6 +587,7 @@ class QualitySummary:
     cer: float | None = None
     similarity: float | None = None
     similarity_original: float | None = None
+    similarity_slot: float | None = None  # doblaje vs original en la misma ranura
     mos: float | None = None
     mos_original: float | None = None
     background_wpm: float | None = None
@@ -493,6 +630,7 @@ class CueQuality:
     cer_units: int = 0
     asr_text: str = ""
     similarity: float | None = None
+    similarity_slot: float | None = None
     mos: float | None = None
 
 
@@ -506,6 +644,7 @@ class DubReport:
     cue_quality: tuple[CueQuality, ...] = ()
     gates: tuple[Gate, ...] = ()
     references: dict[str, ReferenceSpan] = field(default_factory=dict)  # por hablante
+    speech: tuple[Span, ...] = ()  # habla original (el resto del stem de voz es ambiente)
 
     def reference_for(self, speaker: str) -> ReferenceSpan:
         return self.references.get(speaker, self.reference)

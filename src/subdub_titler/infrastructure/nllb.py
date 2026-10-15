@@ -52,12 +52,14 @@ def default_cache() -> Path:
 class NllbTranslator:
     def __init__(self, model_name: str, device: str = "cuda",
                  compute_type: str = "int8_float16", cache_dir: Path | None = None,
-                 beam_size: int = 4, max_batch_size: int = 32) -> None:
+                 beam_size: int = 4, max_batch_size: int = 32,
+                 length_penalty: float = 1.0) -> None:
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type if device == "cuda" else "int8"
         self.cache_dir = cache_dir or default_cache()
         self.beam_size = beam_size
+        self.length_penalty = length_penalty  # <1 favorece hipótesis más cortas
         self.max_batch_size = max_batch_size
         self._translator = None
         self._tokenizer = None
@@ -136,6 +138,7 @@ class NllbTranslator:
             num_hypotheses=n_best, return_scores=True, max_batch_size=self.max_batch_size,
             # Se traduce frase a frase: repetir n-gramas dentro de una frase es alucinación.
             no_repeat_ngram_size=4,
+            length_penalty=self.length_penalty,
         )
         output = []
         for source_text, result in zip(texts, results, strict=True):

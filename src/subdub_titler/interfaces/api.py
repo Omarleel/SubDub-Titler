@@ -51,6 +51,9 @@ class DubJobRequest(BaseModel):
     evaluate: bool = True
     diarize: bool = False
     max_speakers: int = Field(4, ge=1, le=16)
+    merge_fragments: bool = True
+    verify_attempts: int = Field(1, ge=0, le=5)
+    reference_candidates: int = Field(1, ge=1, le=8)
 
 
 class CueEdit(BaseModel):

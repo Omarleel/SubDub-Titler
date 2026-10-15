@@ -134,9 +134,40 @@ Resultados en RTX 5060 Ti (`subdub dub-bench`, video real de 23 min, inglés →
 pico de GPU 11.2 GB. Umbrales cumplidos 7/9: el CER ida y vuelta (6.2 %) lo elevan los subtítulos de ≤1.5 s y la
 velocidad en rango queda en 94.7 % (10 de 187 cues no caben ni a 1.2×: candidatos para editar en la UI).
 
+Mejoras de calidad (mismo video, validadas con la matriz A/B; parecido medido con el original en la misma ranura):
+
+| Variante | Subtítulos | CER | Parecido por ranura | Pipeline* |
+|---|---|---|---|---|
+| Sin mejoras | 187 | 6.21 % | 0.319 | 75 s |
+| + unir fragmentos de frase | 175 | 4.75 % | 0.322 | 72 s |
+| + verificar y reintentar ×2 | 175 | 3.44 % | 0.323 | 140 s |
+| **+ verificar y reintentar ×1 (predeterminado)** | 175 | **3.54 %** | 0.321 | 126 s |
+| + sondear 4 referencias de voz (opcional) | 175 | 3.44 % | 0.323 | 182 s |
+
+La verificación transcribe cada frase con Whisper medium y regenera con el doble de pasos las que no se
+entienden; la calidad final se mide con otro ASR (large-v3) para no optimizar contra la propia métrica.
+
 Motores registrados (extensibles sin tocar los casos de uso): `omnivoice` (predeterminado), `omnivoice-base`
 (decodificación original, para A/B), `voxcpm2` (opcional: `pip install voxcpm==2.0.3`), `nllb-600m`, `nllb-1.3b`,
 `htdemucs`, `htdemucs_ft`.
+
+Coqui XTTS-v2 se evaluó con el mismo corpus y se descartó: CER 4.55 % (OmniVoice 4.9 %) y mejor UTMOS, pero el
+parecido de voz cae de 0.59 a 0.21, es 2.6× más lento, tiene la misma licencia no comercial y no puede convivir
+con OmniVoice (exige transformers < 5).
+
+Correcciones de audio (video real de 13 min con voz original muy alta y saturada, inglés → español):
+
+| Problema | Causa medida | Corrección | Antes → después |
+|---|---|---|---|
+| Voz áspera/robótica | referencia a −9 dBFS: OmniVoice genera a ese nivel y la salida pasaba de 1.0 | referencia a RMS 0.1 (nivel de entrenamiento) | CER 9.3 → 3.1 %, parecido 0.35 → 0.47, saturación 0.9 → 0 % |
+| Voz atropellada | solo 0.5 s de silencio tomable tras cada frase | 1.5 s tras la frase, 0.4 s de adelanto | velocidad en rango 56 → 83 %, máx. ×2.2 → ×1.8 |
+| Ráfagas («gritos») | tramos de 0.1–0.3 s +10 dB sobre la frase | limitador relativo al nivel de cada frase | frases con ráfagas 44 → 0, sin cambio de CER/parecido |
+| Se pierde el ambiente | Demucs mete pájaros, pasos y respiraciones en «voz» | se conserva el stem de voz fuera de las palabras | 498 s de ambiente recuperado, fuga 0.08 palabras/min |
+
+Doblaje completo: umbrales 6/9 → 8/9 (CER 6.2 → 1.7 %). El acento se mide con la probabilidad de español de la
+detección de idioma de Whisper: 0.56 → 0.72; una voz nativa sin clonar llega a 0.92 pero no se parece al hablante
+(0.08). Convertir esa voz nativa al timbre del hablante con kNN-VC se descartó: 0.85 de español, pero parecido
+0.21 y CER 9.6 %.
 
 **Licencias y uso responsable:** los pesos de OmniVoice y NLLB son **CC-BY-NC** (uso no comercial); VoxCPM2 es
 Apache-2.0. Clona solo voces con permiso de su titular; el MP4 marca la pista como «Doblaje sintético».

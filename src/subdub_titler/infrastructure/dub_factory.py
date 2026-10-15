@@ -12,6 +12,7 @@ from subdub_titler.domain.dubbing import DubRequest
 from subdub_titler.domain.models import TranscriptionRequest
 from subdub_titler.domain.ports import SourceSeparator, Translator, VoiceCloner
 from subdub_titler.infrastructure.registry import ModelRegistry
+from subdub_titler.infrastructure.voice_level import BurstGuard
 
 T = TypeVar("T")
 
@@ -79,7 +80,7 @@ class DubFactory:
         from subdub_titler.infrastructure.subtitles import SrtRenderer
         return DubPipeline(
             translator=self.translators.create(request.translator, request),
-            cloner=self.cloners.create(request.tts_engine, request),
+            cloner=self.cloner(request),
             audio=FfmpegAudioStore(), mixer=self.memo.get(("mixer",), FfmpegMixer),
             subtitles=SrtRenderer(),
             muxer=FfmpegMuxer(),
@@ -87,7 +88,18 @@ class DubFactory:
             if request.separator else None,
             evaluator=self.evaluator(request) if request.evaluate else None,
             diarizer=self.diarizer(request) if request.diarize else None,
+            # El verificador es el ASR de la transcripción (ya cargado); la evaluación final
+            # usa otro (large-v3), así los reintentos no optimizan la métrica reportada.
+            verifier=self.whisper(request.asr_model_id, request.device)
+            if request.verify_attempts or request.reference_candidates > 1 else None,
+            speaker_encoder=self.speaker_encoder(request.device)
+            if request.reference_candidates > 1 else None,
         )
+
+    def cloner(self, request: DubRequest) -> VoiceCloner:
+        """Motor TTS pedido con el control de ráfagas (A/B en un video real: frases con
+        ráfagas 44 -> 0, CER/parecido/UTMOS sin cambio significativo)."""
+        return BurstGuard(self.cloners.create(request.tts_engine, request))
 
     def speaker_encoder(self, device: str):
         from subdub_titler.infrastructure.dub_eval import WavLmSpeakerEncoder

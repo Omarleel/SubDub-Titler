@@ -128,6 +128,9 @@ def dub_request(job: dict) -> DubRequest:
         tts_batch=params.get("tts_batch", 8), n_best=params.get("n_best", 4),
         evaluate=params.get("evaluate", True), diarize=params.get("diarize", False),
         max_speakers=params.get("max_speakers", 4),
+        merge_fragments=params.get("merge_fragments", True),
+        verify_attempts=params.get("verify_attempts", 1),
+        reference_candidates=params.get("reference_candidates", 1),
     )
 
 

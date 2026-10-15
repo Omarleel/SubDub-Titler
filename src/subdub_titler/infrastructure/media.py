@@ -9,7 +9,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
-from subdub_titler.domain.dubbing import AudioClip
+from subdub_titler.domain.dubbing import Ambience, AudioClip
 from subdub_titler.domain.ports import MixResult
 
 ISO639_2 = {"en": "eng", "es": "spa", "ja": "jpn", "zh": "zho"}
@@ -157,7 +157,8 @@ def measure_loudness(path: Path) -> tuple[float | None, float | None]:
 
 
 class FfmpegMixer:
-    """Voz doblada colocada en su tiempo + fondo separado, normalizada a `target_lufs`.
+    """Voz doblada colocada en su tiempo + fondo separado (+ ambiente: tramos del stem de voz
+    sin diálogo), normalizada a `target_lufs`.
 
     Ganancia lineal calculada con `ebur128` y limitador de picos (`alimiter`) con 0.5 dB de
     margen para el pico real. `loudnorm` daba lo mismo, pero sobremuestrea a 192 kHz: 2 x 22 s
@@ -165,16 +166,18 @@ class FfmpegMixer:
     """
 
     def __init__(self, sample_rate: int = 48_000, target_lufs: float = -16.0,
-                 true_peak: float = -1.5) -> None:
+                 true_peak: float = -1.5, ambience_fade: float = 0.06) -> None:
         self.sample_rate = sample_rate
         self.target_lufs = target_lufs
         self.true_peak = true_peak
+        self.ambience_fade = ambience_fade
         self._reference_lufs: dict[tuple[str, float], float | None] = {}
-        self._bed: tuple[tuple[str, float], object] | None = None
+        self._tracks: dict[str, tuple[tuple[str, float], object]] = {}
 
     def render(self, placements: Sequence[tuple[float, AudioClip]], background: Path | None,
                duration: float, out_dir: Path,
-               voice_reference: Path | None = None) -> MixResult:
+               voice_reference: Path | None = None,
+               ambience: Ambience | None = None) -> MixResult:
         import numpy as np
         import soundfile
         span = _span
@@ -197,31 +200,57 @@ class FfmpegMixer:
         voice_path = out_dir / "dub_voice.flac"
         with span("dub.mix.write_voice"):
             soundfile.write(str(voice_path), voice, self.sample_rate)
+        bed_path = None
         with span("dub.mix.background"):
             if background is not None:
-                bed = self._background(background)
+                bed = self._stereo("background", background)
                 mix = np.zeros((max(total, len(bed)), 2), dtype=np.float32)
                 mix[: len(bed)] += bed
-                mix[:total] += voice[:, None]
             else:
-                mix = np.repeat(voice[:, None], 2, axis=1)
+                mix = np.zeros((total, 2), dtype=np.float32)
+            if ambience is not None and ambience.spans:
+                kept = self._stereo("ambience", ambience.source)
+                length = min(len(kept), len(mix))
+                mix[:length] += kept[:length] * self._envelope(ambience.spans, length)[:, None]
+                bed_path = out_dir / "dub_bed.flac"
+                soundfile.write(str(bed_path), mix, self.sample_rate)
+            mix[:total] += voice[:, None]
         mix_path = out_dir / "dub_mix.flac"
         with span("dub.mix.normalize"):
             self._normalize(mix, mix_path)
         with span("dub.mix.measure"):
             lufs, peak = measure_loudness(mix_path)
-        return MixResult(voice_path, mix_path, lufs, peak)
+        return MixResult(voice_path, mix_path, lufs, peak, bed_path)
 
-    def _background(self, path: Path):
-        """Fondo decodificado a la tasa de mezcla; se conserva para regenerar cues sin volver
+    def _stereo(self, role: str, path: Path):
+        """Pista decodificada a la tasa de mezcla; se conserva para regenerar cues sin volver
         a decodificar y remuestrear (3 s para 23 min)."""
         import numpy as np
         key = (str(path.resolve()), path.stat().st_mtime)
-        if self._bed is None or self._bed[0] != key:
+        cached = self._tracks.get(role)
+        if cached is None or cached[0] != key:
             raw = _run(["-v", "error", "-i", str(path), "-ac", "2", "-ar", str(self.sample_rate),
                         "-f", "f32le", "-"]).stdout
-            self._bed = (key, np.frombuffer(raw, np.float32).reshape(-1, 2))
-        return self._bed[1]
+            self._tracks[role] = (key, np.frombuffer(raw, np.float32).reshape(-1, 2))
+        return self._tracks[role][1]
+
+    def _envelope(self, spans, length: int):
+        """1 dentro de los tramos, 0 fuera; rampas de coseno hacia dentro de cada tramo (el
+        habla original de los bordes nunca se cuela)."""
+        import numpy as np
+        gain = np.zeros(length, dtype=np.float32)
+        for start, end in spans:
+            first = max(0, int(round(start * self.sample_rate)))
+            last = min(length, int(round(end * self.sample_rate)))
+            if last <= first:
+                continue
+            gain[first:last] = 1.0
+            ramp = min(int(self.ambience_fade * self.sample_rate), (last - first) // 2)
+            if ramp:
+                curve = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, ramp, dtype=np.float32))
+                gain[first:first + ramp] = curve
+                gain[last - ramp:last] = curve[::-1]
+        return gain
 
     def _loudness_pcm(self, samples, channels: int) -> float | None:
         """LUFS integrados de PCM en memoria. Los ceros exactos se sustituyen por 1e-7

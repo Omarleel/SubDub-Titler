@@ -252,6 +252,12 @@ def dub(
     evaluate_quality: Annotated[bool, typer.Option("--evaluate/--no-evaluate")] = False,
     diarize: Annotated[bool, typer.Option(help="Varios hablantes: una voz por hablante")] = False,
     max_speakers: Annotated[int, typer.Option(min=1, max=16)] = 4,
+    merge: Annotated[bool, typer.Option("--merge/--no-merge",
+                                        help="Unir fragmentos de frase")] = True,
+    verify_attempts: Annotated[int, typer.Option(min=0, max=5,
+                                                 help="Reintentos por inteligibilidad")] = 1,
+    reference_candidates: Annotated[int, typer.Option(min=1, max=8,
+                                                      help="Referencias sondeadas")] = 1,
     workdir: Annotated[Path | None, typer.Option(help="Carpeta de artefactos")] = None,
     profile: Annotated[Path | None, typer.Option(help="Reporte JSON de spans")] = None,
 ) -> None:
@@ -262,7 +268,8 @@ def dub(
             asr_model_id=model, device=device, tts_engine=tts, translator=translator,
             separator=None if separator == "none" else separator, num_step=num_step,
             tts_batch=tts_batch, n_best=n_best, evaluate=evaluate_quality, diarize=diarize,
-            max_speakers=max_speakers,
+            max_speakers=max_speakers, merge_fragments=merge, verify_attempts=verify_attempts,
+            reference_candidates=reference_candidates,
         )
         if not request.source.is_file():
             raise FileNotFoundError(f"Archivo no encontrado: {input}")
@@ -297,6 +304,9 @@ def dub_bench(
     tts_batch: Annotated[str, typer.Option(help="Lista, p. ej. 1,8,16")] = "8",
     tts: Annotated[str, typer.Option(help="Lista de motores TTS")] = "omnivoice",
     translator: Annotated[str, typer.Option(help="Lista de traductores")] = "nllb-600m",
+    merge: Annotated[str, typer.Option(help="Lista: true,false")] = "true",
+    verify_attempts: Annotated[str, typer.Option(help="Lista, p. ej. 0,1,2")] = "1",
+    reference_candidates: Annotated[str, typer.Option(help="Lista, p. ej. 1,4")] = "1",
     workdir: Annotated[Path, typer.Option()] = Path("reports/dub-bench"),
     output: Annotated[Path, typer.Option()] = Path("reports/dub-bench.json"),
 ) -> None:
@@ -306,23 +316,26 @@ def dub_bench(
     from subdub_titler.application.dub_bench import DubBenchmark, rows_to_dict
     base = DubRequest(source=input.resolve(), target_language=to,
                       source_language=source_language, asr_model_id=model, evaluate=True)
-    variants = [dict(tts_engine=e, translator=t, num_step=n, tts_batch=b)
-                for e, t, n, b in product(_values(tts), _values(translator),
-                                          _values(num_step, int), _values(tts_batch, int))]
+    variants = [dict(tts_engine=e, translator=t, num_step=n, tts_batch=b, merge_fragments=m,
+                     verify_attempts=v, reference_candidates=r)
+                for e, t, n, b, m, v, r in product(
+                    _values(tts), _values(translator), _values(num_step, int),
+                    _values(tts_batch, int), _values(merge, lambda x: x.lower() == "true"),
+                    _values(verify_attempts, int), _values(reference_candidates, int))]
     from subdub_titler.infrastructure.dub_factory import AsrTranscripts, default_dub_factory
     registry = default_registry()
     transcript = AsrTranscripts(registry)(base, SpanProfiler())
     bench = DubBenchmark(DubUseCase(AsrTranscripts(registry), default_dub_factory(registry)),
                          SpanProfiler)
     rows = bench.run(base, variants, workdir, transcript)
-    table = Table("Variante", "Pipeline s", "TTS s", "RTF TTS", "VRAM MiB", "CER", "SIM",
-                  "UTMOS", "Umbrales", "Adoptable")
+    table = Table("Variante", "Pipeline s", "TTS s", "RTF TTS", "VRAM MiB", "CER",
+                  "SIM ranura", "UTMOS", "Umbrales", "Adoptable")
     for row in rows:
         q = row.quality
         table.add_row(
             " ".join(f"{k}={v}" for k, v in row.variant.items()), f"{row.seconds:.1f}",
             f"{row.tts_seconds:.2f}", f"{row.tts_rtf:.3f}", f"{row.vram_peak_mb or 0:,.0f}",
-            f"{q.get('cer') or 0:.3f}", f"{q.get('similarity') or 0:.3f}",
+            f"{q.get('cer') or 0:.3f}", f"{q.get('similarity_slot') or 0:.3f}",
             f"{q.get('mos') or 0:.2f}", f"{row.gates_passed}/{row.gates_total}",
             "[green]sí[/green]" if row.adoptable else "[red]no[/red]: " + "; ".join(
                 row.regressions))
@@ -385,7 +398,7 @@ def tts_eval(
                          target_language=items[0].language, tts_engine=tts, num_step=num_step,
                          tts_batch=tts_batch, device=device, evaluate=True)
     factory = default_dub_factory(default_registry())
-    evaluation = TtsCorpusEvaluation(factory.cloners.create(tts, request), FfmpegAudioStore(),
+    evaluation = TtsCorpusEvaluation(factory.cloner(request), FfmpegAudioStore(),
                                      factory.evaluator(request), tts_batch)
     result = evaluation.run(items)
     found = regressions(result["summary"], json.loads(baseline.read_text(
@@ -446,7 +459,10 @@ def ui(
     import uvicorn
     console.print(f"API: http://127.0.0.1:{port}/docs")
     console.print("UI: compilar primero con cd apps/web && npm run build")
-    uvicorn.run("subdub_titler.interfaces.api:create_app", host="127.0.0.1", port=port, workers=1, factory=True)
+    # Sin límite, Ctrl+C se queda en «Shutting down» mientras el reproductor tenga abierta una
+    # descarga del video (FileResponse con Range): uvicorn espera a que el navegador la cierre.
+    uvicorn.run("subdub_titler.interfaces.api:create_app", host="127.0.0.1", port=port,
+                workers=1, factory=True, timeout_graceful_shutdown=5)
 
 
 if __name__ == "__main__":

@@ -78,7 +78,7 @@ class VoxCpmCloner:
         return [estimate_seconds_by_rate(t, voice.text, voice.seconds) for t in texts]
 
     def synthesize(self, texts: Sequence[str], durations: Sequence[float], language: str,
-                   voice: object) -> list[AudioClip]:
+                   voice: object, variant: int = 0) -> list[AudioClip]:
         import torch
 
         from subdub_titler.infrastructure.media import time_stretch
@@ -86,7 +86,7 @@ class VoxCpmCloner:
         clips = []
         for text, duration in zip(texts, durations, strict=True):
             if self.seed is not None:
-                torch.manual_seed(self.seed)
+                torch.manual_seed(self.seed + variant)
             with torch.inference_mode():
                 result = model.tts_model._generate_with_prompt_cache(
                     target_text=text, prompt_cache=voice.cache, min_len=2, max_len=4096,

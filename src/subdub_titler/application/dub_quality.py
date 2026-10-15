@@ -52,20 +52,28 @@ class DubEvaluator:
         self._thresholds = thresholds
 
     def evaluate_cues(self, track: Sequence[DubbedCue], clips: Mapping[int, AudioClip],
-                      reference: AudioClip, language: str) -> list[CueQuality]:
+                      reference: AudioClip, language: str,
+                      originals: Mapping[int, AudioClip] | None = None) -> list[CueQuality]:
+        """`originals`: voz original en la ranura de cada cue → parecido por ranura, que no
+        depende de la referencia elegida (permite comparar referencias de forma justa)."""
         ordered = [clips[c.index] for c in track]
+        slot = [self._speaker.similarity(originals[c.index], [clips[c.index]])[0]
+                if self._speaker and originals and c.index in originals else None
+                for c in track]
         heard = self._transcriber.transcribe_clips(ordered, language)
         similarity = self._speaker.similarity(reference, ordered) if self._speaker else \
             [None] * len(track)
         mos = self._naturalness.mos(ordered) if self._naturalness else [None] * len(track)
         result = []
-        for cue, text, sim, score in zip(track, heard, similarity, mos, strict=True):
+        for cue, text, sim, score, same_slot in zip(track, heard, similarity, mos, slot,
+                                                    strict=True):
             counts = evaluate(cue.target_text, text, language)["normalized"]["cer"]
             errors = counts["substitutions"] + counts["deletions"] + counts["insertions"]
             result.append(CueQuality(
                 index=cue.index, cer=None if counts["rate"] is None else round(counts["rate"], 4),
                 cer_errors=errors, cer_units=counts["reference_units"], asr_text=text,
                 similarity=None if sim is None else round(sim, 4),
+                similarity_slot=None if same_slot is None else round(same_slot, 4),
                 mos=None if score is None else round(score, 3),
             ))
         return result
@@ -93,6 +101,8 @@ class DubEvaluator:
             similarity=_mean([q.similarity for q in cue_quality],
                              [weights.get(q.index, 0.0) for q in cue_quality]),
             similarity_original=originals.similarity_original,
+            similarity_slot=_mean([q.similarity_slot for q in cue_quality],
+                                  [weights.get(q.index, 0.0) for q in cue_quality]),
             mos=_mean([q.mos for q in cue_quality]), mos_original=originals.mos_original,
             background_wpm=originals.background_wpm, lufs=lufs, true_peak=true_peak,
         )

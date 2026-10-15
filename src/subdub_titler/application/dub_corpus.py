@@ -127,11 +127,13 @@ class TtsCorpusEvaluation:
         weights = [r["generated_seconds"] for r in rows if r["similarity"] is not None]
         sims = [r["similarity"] for r in rows if r["similarity"] is not None]
         mos = [r["mos"] for r in rows if r["mos"] is not None]
+        native = [r["language_prob"] for r in rows if r["language_prob"] is not None]
         summary = {
             "items": len(rows), "cer": corpus_cer(qualities),
             "similarity": round(sum(s * w for s, w in zip(sims, weights, strict=True))
                                 / sum(weights), 4) if weights else None,
             "mos": round(sum(mos) / len(mos), 4) if mos else None,
+            "language_prob": round(sum(native) / len(native), 4) if native else None,
             "mean_abs_duration_error_ms": round(sum(errors) / len(errors), 1),
             "max_abs_duration_error_ms": round(max(errors), 1),
             "synthesis_seconds": round(synth_seconds, 3), "audio_seconds": round(audio, 3),

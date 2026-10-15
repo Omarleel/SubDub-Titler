@@ -590,6 +590,7 @@ class QualitySummary:
     similarity_slot: float | None = None  # doblaje vs original en la misma ranura
     mos: float | None = None
     mos_original: float | None = None
+    language_prob: float | None = None  # media de p(idioma destino): acento (sin umbral aún)
     background_wpm: float | None = None
     lufs: float | None = None
     true_peak: float | None = None
@@ -632,6 +633,7 @@ class CueQuality:
     similarity: float | None = None
     similarity_slot: float | None = None
     mos: float | None = None
+    language_prob: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

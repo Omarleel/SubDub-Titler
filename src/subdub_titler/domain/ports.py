@@ -119,6 +119,13 @@ class ClipTranscriber(Protocol):
     def transcribe_clips(self, clips: Sequence[AudioClip], language: str) -> list[str]: ...
 
 
+class LanguageIdentifier(Protocol):
+    """Probabilidad de que cada clip suene al idioma dado: mide el acento extranjero que la
+    clonación arrastra de la referencia (más alta = más nativo)."""
+
+    def language_probability(self, clips: Sequence[AudioClip], language: str) -> list[float]: ...
+
+
 class SpeakerEncoder(Protocol):
     def similarity(self, reference: AudioClip, clips: Sequence[AudioClip]) -> list[float]: ...
 

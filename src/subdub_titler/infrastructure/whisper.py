@@ -77,6 +77,28 @@ class FasterWhisperAdapter:
             texts[index].append(segment.text.strip())
         return [" ".join(t).strip() for t in texts]
 
+    def language_probability(self, clips: Sequence[AudioClip], language: str,
+                             batch_size: int = 16) -> list[float]:
+        """p(`language`) de la detección de idioma de Whisper para cada clip (primeros 30 s),
+        en lotes: una pasada del codificador por lote."""
+        import numpy as np
+        from faster_whisper.audio import pad_or_trim
+
+        from subdub_titler.infrastructure.media import resample
+        if not clips:
+            return []
+        model = self._load()
+        extractor = model.feature_extractor
+        result: list[float] = []
+        for first in range(0, len(clips), batch_size):
+            features = np.stack([
+                pad_or_trim(extractor(resample(c.samples, c.sample_rate, SAMPLING_RATE)
+                                      [:extractor.n_samples]))
+                for c in clips[first:first + batch_size]])
+            for probs in model.model.detect_language(model.encode(features)):
+                result.append(next((p for token, p in probs if token == f"<|{language}|>"), 0.0))
+        return result
+
     def transcribe(self, request: TranscriptionRequest) -> Transcript:
         from faster_whisper import BatchedInferencePipeline
         self._load()

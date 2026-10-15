@@ -234,12 +234,13 @@ export function DubPage({ jobs, job, onSelect }: Props) {
         <section className={`${ui.panel} mb-[20px]`} aria-labelledby="dub-summary">
           <div className={ui.panelHead}><h2 id="dub-summary" className={ui.panelTitle}>2 <span className={ui.panelTitleSub}>· Resultado y validación</span></h2>
             <span className={`${ui.step} ${judged.length && judged.every(g => g.passed) ? 'text-ok' : ''}`}>{judged.filter(g => g.passed).length} / {judged.length} UMBRALES</span></div>
-          <dl className="grid grid-cols-[repeat(6,minmax(0,1fr))] gap-[8px] m-0 upto900:grid-cols-[repeat(3,minmax(0,1fr))]">
+          <dl className="grid grid-cols-[repeat(7,minmax(0,1fr))] gap-[8px] m-0 upto900:grid-cols-[repeat(3,minmax(0,1fr))]">
             <div className={COUNT}><dt className={COUNT_LABEL}>Subtítulos · hablantes</dt><dd className={COUNT_VALUE}>{result.sync.cues} · {speakers}</dd></div>
             <div className={COUNT}><dt className={COUNT_LABEL}>Error medio de duración</dt><dd className={COUNT_VALUE}>{result.sync.mean_abs_error_ms} ms</dd></div>
             <div className={COUNT}><dt className={COUNT_LABEL}>Velocidad de habla</dt><dd className={COUNT_VALUE}>{result.sync.speed_min}–{result.sync.speed_max}×</dd></div>
             <div className={COUNT}><dt className={COUNT_LABEL}>Sonoridad</dt><dd className={COUNT_VALUE}>{result.quality?.lufs ?? result.outputs.lufs ?? 'N/D'} LUFS</dd></div>
             <div className={COUNT}><dt className={COUNT_LABEL}>UTMOS doblaje / original</dt><dd className={COUNT_VALUE}>{result.quality?.mos?.toFixed(2) ?? 'N/D'} / {result.quality?.mos_original?.toFixed(2) ?? 'N/D'}</dd></div>
+            <div className={COUNT} title="Probabilidad media de que Whisper oiga el idioma destino: más alta = menos acento extranjero"><dt className={COUNT_LABEL}>Suena nativo</dt><dd className={COUNT_VALUE}>{result.quality?.language_prob == null ? 'N/D' : pct(result.quality.language_prob)}</dd></div>
             <div className={COUNT}><dt className={COUNT_LABEL}>Valoración humana</dt><dd className={COUNT_VALUE}>{ratings?.mean != null ? `${ratings.mean.toFixed(2)} / 5 (${ratings.count})` : 'Sin valorar'}</dd></div>
           </dl>
           {gates.length > 0 && <ul className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-[6px] mt-[14px] mb-0 p-0 list-none upto900:grid-cols-[1fr]">
@@ -314,10 +315,11 @@ export function DubPage({ jobs, job, onSelect }: Props) {
               </dl>
               {!!cue.attempts && <p className="text-[12px] text-[#9fb0c6] mt-[8px] mb-0">Regenerado automáticamente {cue.attempts} {cue.attempts === 1 ? 'vez' : 'veces'} porque la primera versión no se entendía bien.</p>}
               {cue.action === 'shorten' && <p className="text-[12px] text-warn mt-[8px] mb-0">No cabe ni a la velocidad máxima: prueba una traducción más corta.</p>}
-              {cueQuality && <dl className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-[8px] mt-[8px] mx-0 mb-0">
+              {cueQuality && <dl className="grid grid-cols-[repeat(4,minmax(0,1fr))] gap-[8px] mt-[8px] mx-0 mb-0">
                 <div className={COUNT}><dt className={COUNT_LABEL}>CER ida y vuelta</dt><dd className={COUNT_VALUE}>{cueQuality.cer == null ? 'N/D' : pct(cueQuality.cer)}</dd></div>
                 <div className={COUNT}><dt className={COUNT_LABEL}>Parecido con el original</dt><dd className={COUNT_VALUE}>{cueQuality.similarity_slot?.toFixed(2) ?? cueQuality.similarity?.toFixed(2) ?? 'N/D'}</dd></div>
                 <div className={COUNT}><dt className={COUNT_LABEL}>UTMOS</dt><dd className={COUNT_VALUE}>{cueQuality.mos?.toFixed(2) ?? 'N/D'}</dd></div>
+                <div className={COUNT}><dt className={COUNT_LABEL}>Suena nativo</dt><dd className={COUNT_VALUE}>{cueQuality.language_prob == null ? 'N/D' : pct(cueQuality.language_prob)}</dd></div>
               </dl>}
               {cueQuality && <p className="text-[12px] text-[#9fb0c6] mt-[8px] mb-0 leading-[1.5]"><span className="text-[10px] tracking-[1px] text-[#7185a1] block mb-[3px]">LO QUE ENTIENDE EL ASR</span>{cueQuality.asr_text || '—'}</p>}
 

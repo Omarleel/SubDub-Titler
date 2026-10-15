@@ -231,6 +231,9 @@ def _print_dub(report: DubReport, events, elapsed: float) -> None:
             gates.add_row(gate.name, "N/D" if gate.value is None else f"{gate.value:.4g}",
                           ("≥ " if gate.higher_is_better else "≤ ") + f"{gate.threshold:g}", mark)
         console.print(gates)
+    if report.quality and report.quality.language_prob is not None:
+        console.print(f"Suena nativo (p del idioma destino, sin umbral): "
+                      f"{report.quality.language_prob:.1%}")
     for key, value in report.outputs.items():
         console.print(f"[green]{key}:[/green] {value}")
     console.print(f"Tiempo total: {elapsed:.1f} s")
@@ -412,6 +415,37 @@ def tts_eval(
     console.print(f"[green]Informe:[/green] {output}")
     if found:
         raise typer.Exit(1)
+
+
+@app.command("listen-panel")
+def listen_panel(
+    workdirs: Annotated[list[Path], typer.Argument(help="Carpetas de doblaje del mismo video")],
+    names: Annotated[str | None, typer.Option(help="Nombres de las variantes, separados por "
+                                                   "comas (por defecto, el de la carpeta)")] = None,
+    limit: Annotated[int, typer.Option(min=1, max=200)] = 20,
+    min_seconds: Annotated[float, typer.Option(help="Duración mínima de las frases")] = 1.5,
+    seed: Annotated[int, typer.Option()] = 0,
+    output: Annotated[Path, typer.Option()] = Path("reports/listen-panel"),
+) -> None:
+    """Panel de escucha a ciegas: acento y parecido de voz de varias variantes de un doblaje."""
+    from subdub_titler.application.listening_panel import ListeningPanel
+    from subdub_titler.infrastructure.media import FfmpegAudioStore
+    from subdub_titler.interfaces.listening_page import render_listening_page
+    labels = _values(names) if names else [w.resolve().name for w in workdirs]
+    if len(labels) != len(workdirs) or len(set(labels)) != len(labels):
+        raise typer.BadParameter("Hace falta un nombre distinto por carpeta")
+    if output.exists():
+        shutil.rmtree(output / "audio", ignore_errors=True)
+    try:
+        items = ListeningPanel(FfmpegAudioStore()).build(dict(zip(labels, workdirs, strict=True)),
+                                                         output, limit, min_seconds, seed)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    title = "Panel de escucha · " + " / ".join(labels)
+    page = output / "index.html"
+    page.write_text(render_listening_page(items, title, f"{'-'.join(labels)}-{seed}"),
+                    encoding="utf-8")
+    console.print(f"{len(items)} frases × {len(labels)} variantes. [green]Abre:[/green] {page}")
 
 
 @app.command("translate-eval")

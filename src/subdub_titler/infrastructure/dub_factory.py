@@ -136,6 +136,7 @@ class DubFactory:
             naturalness=self.memo.get(("mos", device), lambda: Utmos22Predictor(device)),
             leak_meter=AsrLeakMeter(self.whisper(request.asr_model_id, device),
                                     request.asr_model_id, device, compute),
+            language_id=whisper,
         )
 
 

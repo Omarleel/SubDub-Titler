@@ -1,5 +1,6 @@
 """Validación automática del doblaje: inteligibilidad (CER ida y vuelta), parecido de voz,
-naturalidad relativa al original, fuga de voz en el fondo y umbrales.
+naturalidad relativa al original, acento (p del idioma destino), fuga de voz en el fondo y
+umbrales.
 
 Cada medidor es un puerto opcional: sin él, la métrica queda en `None` y su umbral no se evalúa.
 """
@@ -20,6 +21,7 @@ from subdub_titler.domain.dubbing import (
 )
 from subdub_titler.domain.ports import (
     ClipTranscriber,
+    LanguageIdentifier,
     NaturalnessPredictor,
     SpeakerEncoder,
     SpeechLeakMeter,
@@ -44,11 +46,13 @@ class DubEvaluator:
     def __init__(self, transcriber: ClipTranscriber, speaker: SpeakerEncoder | None = None,
                  naturalness: NaturalnessPredictor | None = None,
                  leak_meter: SpeechLeakMeter | None = None,
+                 language_id: LanguageIdentifier | None = None,
                  thresholds: DubThresholds = DEFAULT_THRESHOLDS) -> None:
         self._transcriber = transcriber
         self._speaker = speaker
         self._naturalness = naturalness
         self._leak_meter = leak_meter
+        self._language_id = language_id
         self._thresholds = thresholds
 
     def evaluate_cues(self, track: Sequence[DubbedCue], clips: Mapping[int, AudioClip],
@@ -64,9 +68,11 @@ class DubEvaluator:
         similarity = self._speaker.similarity(reference, ordered) if self._speaker else \
             [None] * len(track)
         mos = self._naturalness.mos(ordered) if self._naturalness else [None] * len(track)
+        native = self._language_id.language_probability(ordered, language) \
+            if self._language_id else [None] * len(track)
         result = []
-        for cue, text, sim, score, same_slot in zip(track, heard, similarity, mos, slot,
-                                                    strict=True):
+        for cue, text, sim, score, same_slot, prob in zip(track, heard, similarity, mos, slot,
+                                                          native, strict=True):
             counts = evaluate(cue.target_text, text, language)["normalized"]["cer"]
             errors = counts["substitutions"] + counts["deletions"] + counts["insertions"]
             result.append(CueQuality(
@@ -75,6 +81,7 @@ class DubEvaluator:
                 similarity=None if sim is None else round(sim, 4),
                 similarity_slot=None if same_slot is None else round(same_slot, 4),
                 mos=None if score is None else round(score, 3),
+                language_prob=None if prob is None else round(prob, 4),
             ))
         return result
 
@@ -112,6 +119,7 @@ class DubEvaluator:
             similarity_slot=_mean([q.similarity_slot for q in cue_quality],
                                   [weights.get(q.index, 0.0) for q in cue_quality]),
             mos=_mean([q.mos for q in cue_quality]), mos_original=originals.mos_original,
+            language_prob=_mean([q.language_prob for q in cue_quality]),
             background_wpm=originals.background_wpm, lufs=lufs, true_peak=true_peak,
         )
 

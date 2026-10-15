@@ -103,6 +103,7 @@ subdub dub-bench video.mp4 --to es --num-step 8,16,32 --tts-batch 1,8,16   # mat
 subdub tts-eval --from-report video.dub-es/report.json --limit 40 --save-manifest corpus/tts-es.jsonl
 subdub tts-eval --manifest corpus/tts-es.jsonl --baseline reports/tts-eval-base.json   # regresión
 subdub translate-eval --manifest corpus/mt.jsonl --translator nllb-600m             # chrF
+subdub listen-panel video.dub-es otra-variante --limit 20   # escucha a ciegas: acento y parecido
 ```
 
 En la UI, la sección **Doblaje** lanza trabajos sobre una transcripción, muestra el progreso por etapa, los
@@ -120,6 +121,7 @@ regenerarlo (Ctrl+Enter) y puntuarlo de 1 a 5.
 | Separación | palabras/min que el ASR reconoce en el fondo | ≤ 2 |
 | Mezcla | sonoridad integrada y pico real (`ebur128`) | −16 ± 1 LUFS, ≤ −1 dBTP |
 | Traducción | chrF frente a referencias humanas (idéntico a sacreBLEU) | sin regresión |
+| Acento | probabilidad media del idioma destino en la detección de idioma de Whisper large-v3 («suena nativo») | informativa |
 
 Resultados en RTX 5060 Ti (`subdub dub-bench`, video real de 23 min, inglés → español):
 
@@ -168,6 +170,12 @@ Doblaje completo: umbrales 6/9 → 8/9 (CER 6.2 → 1.7 %). El acento se mide co
 detección de idioma de Whisper: 0.56 → 0.72; una voz nativa sin clonar llega a 0.92 pero no se parece al hablante
 (0.08). Convertir esa voz nativa al timbre del hablante con kNN-VC se descartó: 0.85 de español, pero parecido
 0.21 y CER 9.6 %.
+
+La detección de idioma es poco fiable como medida de acento cuando el destino es español, así que los cambios de
+voz se validan además con `subdub listen-panel`: genera una página local con las mismas frases de varias
+variantes, en orden aleatorio y con nombres de archivo que no las delatan; se puntúa el acento y el parecido
+(1–5) y al final muestra la media por variante y descarga las respuestas. En un video de 13 min la medida
+distingue claramente la voz clonada (0.32, 146 de 216 frases por debajo de 0.5) de la nativa sin clonar (0.92).
 
 **Licencias y uso responsable:** los pesos de OmniVoice y NLLB son **CC-BY-NC** (uso no comercial); VoxCPM2 es
 Apache-2.0. Clona solo voces con permiso de su titular; el MP4 marca la pista como «Doblaje sintético».

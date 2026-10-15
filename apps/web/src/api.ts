@@ -26,6 +26,7 @@ export type DubCue = {
 export type CueQuality = {
   index: number; cer: number | null; cer_errors: number; cer_units: number;
   asr_text: string; similarity: number | null; similarity_slot?: number | null; mos: number | null;
+  language_prob?: number | null;
 }
 export type Gate = {
   name: string; value: number | null; threshold: number; higher_is_better: boolean;
@@ -40,6 +41,7 @@ export type QualitySummary = {
   cer: number | null; similarity: number | null; similarity_original: number | null;
   similarity_slot?: number | null;
   mos: number | null; mos_original: number | null; background_wpm: number | null;
+  language_prob?: number | null;
   lufs: number | null; true_peak: number | null;
 }
 export type DubResult = {

@@ -108,6 +108,13 @@ class FixedMos:
         return [3.0] * len(clips)
 
 
+class FixedLanguage:
+    """Acento: p(idioma destino) fija para cada clip."""
+
+    def language_probability(self, clips, language):
+        return [0.4] * len(clips)
+
+
 class FixedLeak:
     def words_per_minute(self, path):
         return 0.5
@@ -126,7 +133,8 @@ class FakeFactory:
         return [{"id": "fake", "kind": "motor TTS", "description": "", "license": ""}]
 
     def build(self, request):
-        evaluator = DubEvaluator(EchoTranscriber(), FixedSpeaker(), FixedMos(), FixedLeak()) \
+        evaluator = DubEvaluator(EchoTranscriber(), FixedSpeaker(), FixedMos(), FixedLeak(),
+                                 language_id=FixedLanguage()) \
             if request.evaluate else None
         return DubPipeline(translator=self.translator, cloner=self.cloner,
                            audio=FakeAudioStore(), mixer=self.mixer, subtitles=SrtRenderer(),

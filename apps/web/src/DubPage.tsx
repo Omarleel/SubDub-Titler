@@ -193,7 +193,7 @@ export function DubPage({ jobs, job, onSelect }: Props) {
         <div className="flex gap-[12px] flex-wrap items-end">
           <label className="text-[11px] text-[#96a8be] font-semibold flex flex-col gap-[6px]">Transcripción de origen
             <select className={SELECT} value={source?.id ?? ''} onChange={e => onSelect(e.target.value)}>
-              {sources.map(j => <option key={j.id} value={j.id}>{j.original_name} · {j.transcript?.language.toUpperCase()}</option>)}</select></label>
+              {sources.map(j => <option key={j.id} value={j.id}>{j.original_name} · {j.model_id} · {j.transcript?.language.toUpperCase()}</option>)}</select></label>
           <label className="text-[11px] text-[#96a8be] font-semibold flex flex-col gap-[6px]">Idioma del doblaje
             <select className={SELECT} value={options.target_language} onChange={e => setOptions({ ...options, target_language: e.target.value })}>
               {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.title}</option>)}</select></label>

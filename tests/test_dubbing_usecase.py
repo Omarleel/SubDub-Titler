@@ -102,3 +102,25 @@ def test_components_release_gpu_after_their_stage(tmp_path: Path):
     DubUseCase(no_transcripts, factory).execute(request(tmp_path), tmp_path / "w",
                                                 transcript=transcript())
     assert released == ["traductor", "tts"]
+    # Los Whisper que dejaron trabajos anteriores se descargan antes de empezar.
+    assert factory.idle_released == 1
+
+
+def test_registry_releases_cached_engines_without_forgetting_them():
+    from subdub_titler.infrastructure.registry import ModelRegistry
+
+    class Engine:
+        released = 0
+
+        def transcribe(self, request):
+            raise AssertionError
+
+        def release(self):
+            self.released += 1
+
+    registry = ModelRegistry()
+    engine = Engine()
+    registry.remember("large-v3", "cuda", "float16", engine)
+    registry.release_cached()
+    assert engine.released == 1
+    assert registry.cached_engine("large-v3", "cuda", "float16") is engine

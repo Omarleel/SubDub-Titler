@@ -88,6 +88,10 @@ class DubPipeline:
 class DubComponentFactory(Protocol):
     def build(self, request: DubRequest) -> DubPipeline: ...
 
+    def release_idle(self) -> None:
+        """Descarga de la GPU los modelos que dejaron trabajos anteriores (se recargan solos)."""
+        ...
+
 
 class TranscriptProvider(Protocol):
     def __call__(self, request: DubRequest, profiler: Profiler) -> Transcript: ...
@@ -159,10 +163,14 @@ class DubUseCase:
         space = Workspace(workdir)
         workdir.mkdir(parents=True, exist_ok=True)
         with profiler.measure("dub.components"):
+            # Un único proceso sirve todos los trabajos: un Whisper de una transcripción previa
+            # más el del doblaje y OmniVoice desbordaban los 16 GB (verificación ~10x más lenta).
+            self._factory.release_idle()
             pipe = self._factory.build(request)
         if transcript is None:
             progress("transcribir", 0.0)
             transcript = self._transcripts(request, profiler)
+            self._factory.release_idle()  # Whisper de la transcripción: ~3.5 GB con large-v3
         cues = cues_from_transcript(transcript)
         if not cues:
             raise ValueError("La transcripción no tiene diálogo que doblar")
@@ -228,7 +236,7 @@ class DubUseCase:
             progress("verificar", 0.8)
             with profiler.measure("dub.verify"):
                 plan = self._verify_and_retry(pipe, request, plan, clips, voices)
-        _release(pipe.cloner)
+        _release(pipe.cloner, pipe.verifier)
         track = tuple(replace(item, generated_seconds=round(clips[item.index].duration, 3))
                       for item in plan)
         with profiler.measure("dub.save_cues"):
@@ -384,6 +392,10 @@ class DubUseCase:
         ~20 s de ASR aislado (fijo; empaquetar clips lo abarata 4× pero oculta errores y el CER
         solo baja a 4.2–4.7 %; beam 1, int8 o lotes mayores no aceleran) y ~35 s de reintentos."""
         language = request.target_language
+        # TTS (PyTorch) y verificador (CTranslate2) nunca coinciden en la GPU: la caché de
+        # activaciones de los lotes de TTS más Whisper large-v3 desbordaba los 16 GB (con lo
+        # que ocupa el escritorio) y la etapa iba ~10x más lenta. Se alternan por fases.
+        _release(pipe.cloner)
         rates = dict(zip((c.index for c in plan), self._cer(
             pipe.verifier, [c.target_text for c in plan], [clips[c.index] for c in plan],
             language), strict=True))
@@ -392,20 +404,23 @@ class DubUseCase:
             failing = [c for c in plan if rates[c.index] > self._verify.max_cer]
             if not failing:
                 break
+            _release(pipe.verifier)
+            retried: list[tuple[DubbedCue, AudioClip]] = []
             for speaker, voice in voices.items():
                 group = sorted((c for c in failing if c.speaker == speaker),
                                key=lambda c: c.target_seconds)
                 for first in range(0, len(group), request.tts_batch):
                     batch = group[first:first + request.tts_batch]
-                    new = pipe.cloner.synthesize([c.target_text for c in batch],
-                                                 [c.target_seconds for c in batch], language,
-                                                 voice.handle, variant=variant)
-                    new_rates = self._cer(pipe.verifier, [c.target_text for c in batch], new,
-                                          language)
-                    for cue, clip, rate in zip(batch, new, new_rates, strict=True):
-                        attempts[cue.index] = variant
-                        if rate < rates[cue.index]:
-                            clips[cue.index], rates[cue.index] = clip, rate
+                    retried += zip(batch, pipe.cloner.synthesize(
+                        [c.target_text for c in batch], [c.target_seconds for c in batch],
+                        language, voice.handle, variant=variant), strict=True)
+            _release(pipe.cloner)
+            new_rates = self._cer(pipe.verifier, [c.target_text for c, _ in retried],
+                                  [clip for _, clip in retried], language)
+            for (cue, clip), rate in zip(retried, new_rates, strict=True):
+                attempts[cue.index] = variant
+                if rate < rates[cue.index]:
+                    clips[cue.index], rates[cue.index] = clip, rate
         return [replace(c, attempts=attempts[c.index]) for c in plan]
 
     def _plan(self, cloner: VoiceCloner, cues: Sequence[DubCue],

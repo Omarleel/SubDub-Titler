@@ -2,7 +2,7 @@
 from collections.abc import Callable
 
 from subdub_titler.domain.models import ModelDescriptor, TranscriptionRequest
-from subdub_titler.domain.ports import ASREngine
+from subdub_titler.domain.ports import ASREngine, Releasable
 
 
 # Presets verificados como nombres del catálogo de faster-whisper.
@@ -46,6 +46,12 @@ class ModelRegistry:
 
     def remember(self, model_id: str, device: str, compute_type: str, engine: ASREngine) -> None:
         self._engine_cache[(model_id, device, compute_type)] = engine
+
+    def release_cached(self) -> None:
+        """Descarga de la GPU los motores en caché; siguen registrados y recargan al usarse."""
+        for engine in self._engine_cache.values():
+            if isinstance(engine, Releasable):
+                engine.release()
 
 
 def default_registry() -> ModelRegistry:

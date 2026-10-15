@@ -119,6 +119,9 @@ class FakeFactory:
         self.translator = FakeTranslator()
         self.mixer = FakeMixer()
 
+    def release_idle(self):
+        self.idle_released = getattr(self, "idle_released", 0) + 1
+
     def components(self):
         return [{"id": "fake", "kind": "motor TTS", "description": "", "license": ""}]
 

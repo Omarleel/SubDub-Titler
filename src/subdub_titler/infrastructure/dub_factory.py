@@ -75,6 +75,11 @@ class DubFactory:
         return [asdict(info) for registry in (self.cloners, self.translators, self.separators)
                 for info in registry.list()]
 
+    def release_idle(self) -> None:
+        """Whisper de trabajos anteriores fuera de la GPU (OmniVoice se conserva: 2 GB que se
+        reutilizan al regenerar cues; sus activaciones ya se liberan por etapa)."""
+        self.asr_registry.release_cached()
+
     def build(self, request: DubRequest) -> DubPipeline:
         from subdub_titler.infrastructure.media import FfmpegAudioStore, FfmpegMixer, FfmpegMuxer
         from subdub_titler.infrastructure.subtitles import SrtRenderer

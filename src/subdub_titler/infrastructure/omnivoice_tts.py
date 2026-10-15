@@ -137,4 +137,9 @@ class OmniVoiceCloner:
                 postprocess_output=False, pad_duration=0.0,
                 fade_duration=self.settings.fade_seconds,
             )
+        if torch.cuda.is_available():
+            # Cada lote tiene otra longitud: sin vaciar, la caché del asignador se fragmenta
+            # (decodificación original: 10.3 GB reservados para 3.2 GB usados; vaciando 3.7 GB,
+            # +1.8 % de tiempo) y desborda los 16 GB junto al verificador.
+            torch.cuda.empty_cache()
         return [AudioClip(audio, model.sampling_rate) for audio in audios]

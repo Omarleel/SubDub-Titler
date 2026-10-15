@@ -88,7 +88,15 @@ class DubEvaluator:
         return _mean(self._speaker.similarity(reference, clips), [c.duration for c in clips])
 
     def background_wpm(self, path: Path) -> float | None:
-        return round(self._leak_meter.words_per_minute(path), 2) if self._leak_meter else None
+        """Última medición: los medidores de voz ya terminaron y se liberan antes de transcribir
+        la pista entera (con todo cargado el pico llegaba a 12 GB)."""
+        if not self._leak_meter:
+            return None
+        from subdub_titler.domain.ports import Releasable
+        for part in (self._speaker, self._naturalness):
+            if isinstance(part, Releasable):
+                part.release()
+        return round(self._leak_meter.words_per_minute(path), 2)
 
     def summarize(self, cue_quality: Sequence[CueQuality], track: Sequence[DubbedCue],
                   originals: QualitySummary, lufs: float | None,

@@ -223,7 +223,7 @@ export function App() {
             <table className="w-full border-collapse text-[#cad5e8] text-[12px]"><thead><tr><th className={TH}>Etapa</th><th className={TH}>Duración</th><th className={TH}>Peso relativo</th></tr></thead><tbody>{stagesInOrder(job.profiling).map((e, i) => <tr key={i}><td className={`${TD} ${e.depth ? 'pl-[26px] text-[#9fb0c6]' : ''}`} title={e.name}>{e.depth ? '↳ ' : ''}{STAGES[e.name] ?? e.name}</td><td className={TD}>{e.milliseconds >= 1000 ? `${(e.milliseconds / 1000).toFixed(2)} s` : `${e.milliseconds.toFixed(1)} ms`}</td><td className={TD}><div className="h-[8px] bg-[#222c40] rounded-[10px] w-full overflow-hidden"><div className="h-full rounded-[8px] bg-[linear-gradient(90deg,#6d73f9,#5cbbd7)]" style={{width: `${Math.min(100, 100 * e.milliseconds / Math.max(1, ...job.profiling!.map(x => x.milliseconds)))}%`}} /></div></td></tr>)}</tbody></table>
             <p className={ui.hint}>«Cargar modelo» solo ocurre en el primer trabajo de cada modelo; después queda en memoria. Velocidad: cuántos minutos de audio se procesan por cada minuto real.</p></>}
         </div>}
-        <footer className="flex justify-between text-[#52677f] text-[10px] tracking-[.5px] mt-[37px]"><span>SubDub-Titler · Clean Architecture + faster-whisper</span><span>EN · ES · JA · ZH</span></footer>
+        <footer className="flex justify-between text-[#52677f] text-[10px] tracking-[.5px] mt-[37px]"><span>SubDub-Titler</span><span>EN · ES · JA · ZH</span></footer>
       </div>
     </main>
   </div>

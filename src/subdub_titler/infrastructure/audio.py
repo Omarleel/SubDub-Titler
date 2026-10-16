@@ -13,7 +13,7 @@ SAMPLING_RATE = 16_000
 _vad_tuned = False
 
 
-def decode(source: Path):
+def decode(source: Path, normalize_loudness: bool = False):
     """PCM mono 16 kHz float32. ffmpeg multihilo es ~2x más rápido que PyAV y produce
     las mismas muestras (ambos s16 → /32768); PyAV queda como respaldo."""
     import numpy as np
@@ -21,10 +21,15 @@ def decode(source: Path):
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg:
         try:
+            cmd = [
+                ffmpeg, "-nostdin", "-v", "error", "-threads", "0", "-i", str(source),
+                "-vn", "-ac", "1", "-ar", str(SAMPLING_RATE),
+            ]
+            if normalize_loudness:
+                cmd.extend(["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"])
+            cmd.extend(["-f", "s16le", "-"])
             pcm = subprocess.run(
-                [ffmpeg, "-nostdin", "-v", "error", "-threads", "0", "-i", str(source),
-                 "-vn", "-ac", "1", "-ar", str(SAMPLING_RATE), "-f", "s16le", "-"],
-                capture_output=True, check=True,
+                cmd, capture_output=True, check=True,
             ).stdout
             return np.frombuffer(pcm, np.int16).astype(np.float32) / 32768.0
         except (OSError, subprocess.CalledProcessError) as exc:

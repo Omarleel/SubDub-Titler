@@ -49,6 +49,12 @@ class TranscriptionRequest:
     vad_filter: bool = True
     word_timestamps: bool = True
     batch_size: int = 16  # 1 = decodificación secuencial
+    vad_threshold: float = 0.35
+    vad_speech_pad_ms: int = 800
+    vad_min_silence_ms: int = 2000
+    no_speech_threshold: float = 0.40
+    normalize_loudness: bool = False
+    isolate_dialogue: bool = False
 
     def __post_init__(self) -> None:
         if not self.source.is_file():
@@ -61,6 +67,14 @@ class TranscriptionRequest:
             raise ValueError("Idioma no soportado")
         if self.device not in ("cpu", "cuda"):
             raise ValueError("Dispositivo inválido")
+        if not (0.0 <= self.vad_threshold <= 1.0):
+            raise ValueError("vad_threshold debe estar entre 0.0 y 1.0")
+        if self.vad_speech_pad_ms < 0:
+            raise ValueError("vad_speech_pad_ms debe ser >= 0")
+        if self.vad_min_silence_ms < 0:
+            raise ValueError("vad_min_silence_ms debe ser >= 0")
+        if not (0.0 <= self.no_speech_threshold <= 1.0):
+            raise ValueError("no_speech_threshold debe estar entre 0.0 y 1.0")
 
 
 @dataclass(frozen=True, slots=True)

@@ -17,6 +17,7 @@ const STATUS: Record<Job['status'], string> = {
 }
 const STAGES: Record<string, string> = {
   'registry.engine_for': 'Preparar motor',
+  'asr.isolate_dialogue': 'Aislar diálogo (Demucs)',
   'asr.transcribe_complete': 'Reconocimiento de voz (total)',
   'asr.model_load': 'Cargar modelo en la GPU',
   'audio.decode': 'Extraer audio del archivo',
@@ -87,6 +88,9 @@ export function App() {
   const [language, setLanguage] = useState('auto')
   const [device, setDevice] = useState('cuda')
   const [compute, setCompute] = useState('float16')
+  const [profileType, setProfileType] = useState<'standard' | 'sensitive' | 'isolate'>('standard')
+  const [normalizeLoudness, setNormalizeLoudness] = useState(true)
+  const [isolateDialogue, setIsolateDialogue] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -123,6 +127,19 @@ export function App() {
       data.set('language', language)
       data.set('device', device)
       data.set('compute_type', compute)
+      if (profileType === 'sensitive') {
+        data.set('vad_threshold', '0.28')
+        data.set('vad_speech_pad_ms', '1000')
+        data.set('vad_min_silence_ms', '2500')
+        data.set('no_speech_threshold', '0.30')
+      } else {
+        data.set('vad_threshold', '0.35')
+        data.set('vad_speech_pad_ms', '800')
+        data.set('vad_min_silence_ms', '2000')
+        data.set('no_speech_threshold', '0.40')
+      }
+      data.set('normalize_loudness', String(normalizeLoudness))
+      data.set('isolate_dialogue', String(isolateDialogue))
       const result = await api.create(data)
       navigate({ job: result.id })
       setJobs(prev => [result, ...prev])
@@ -179,6 +196,51 @@ export function App() {
                 <label className={FIELD_LABEL}>Modelo<select className={FIELD} value={model} onChange={e => setModel(e.target.value)}>{models.map(m => <option key={m.id} value={m.id}>{m.id}</option>)}</select></label>
                 <label className={FIELD_LABEL}>Dispositivo<select className={FIELD} value={device} onChange={e => { const d=e.target.value;setDevice(d);setCompute(d === 'cpu' ? 'int8' : 'float16') }}><option value="cuda">NVIDIA CUDA</option><option value="cpu">CPU (pruebas)</option></select></label>
                 <label className={FIELD_LABEL}>Precisión<select className={FIELD} value={compute} onChange={e => setCompute(e.target.value)}><option value="float16">float16</option><option value="int8_float16">int8_float16</option><option value="int8">int8</option><option value="float32">float32</option></select></label>
+                <label className={`${FIELD_LABEL} col-span-2`}>
+                  Perfil acústico y VAD
+                  <select
+                    className={FIELD}
+                    value={profileType}
+                    onChange={e => {
+                      const val = e.target.value as 'standard' | 'sensitive' | 'isolate'
+                      setProfileType(val)
+                      if (val === 'isolate') {
+                        setIsolateDialogue(true)
+                        setNormalizeLoudness(true)
+                      } else if (val === 'sensitive') {
+                        setIsolateDialogue(false)
+                        setNormalizeLoudness(true)
+                      } else {
+                        setIsolateDialogue(false)
+                        setNormalizeLoudness(true)
+                      }
+                    }}
+                  >
+                    <option value="standard">Estándar · VAD calibrado (pad=800ms, th=0.35)</option>
+                    <option value="sensitive">Diálogo difícil / Susurros · VAD sensible (pad=1000ms, th=0.28)</option>
+                    <option value="isolate">Con música / SFX · Aislar voz con Demucs pre-ASR</option>
+                  </select>
+                </label>
+              </div>
+              <div className="flex flex-col gap-[9px] mb-[22px] px-[2px]">
+                <label className="flex items-center gap-[10px] text-[12px] text-[#97a8bc] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer accent-[#7b81ff]"
+                    checked={normalizeLoudness}
+                    onChange={e => setNormalizeLoudness(e.target.checked)}
+                  />
+                  <span>Normalización de sonoridad EBU R128 (-16 LUFS con ffmpeg)</span>
+                </label>
+                <label className="flex items-center gap-[10px] text-[12px] text-[#97a8bc] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer accent-[#7b81ff]"
+                    checked={isolateDialogue}
+                    onChange={e => setIsolateDialogue(e.target.checked)}
+                  />
+                  <span>Aislar diálogo con Demucs (elimina música y ruido ambiental antes de ASR)</span>
+                </label>
               </div>
               <button disabled={!file || busy} className={ui.primaryBtn} onClick={submit}>{busy ? 'Enviando…' : '▶ Iniciar transcripción'} <span className="ml-auto">→</span></button>
             </section>

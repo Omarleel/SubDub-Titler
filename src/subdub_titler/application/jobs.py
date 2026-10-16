@@ -93,10 +93,17 @@ class TranscribeJobHandler:
         self.output_dir = output_dir
 
     def run(self, job: dict, progress: Progress) -> dict:
+        params = job.get("params") or {}
         request = TranscriptionRequest(
             source=Path(job["file_path"]), model_id=job["model_id"],
             language=job["language"], device=job["device"],
-            compute_type=job["compute_type"], batch_size=job["params"].get("batch_size", 16),
+            compute_type=job["compute_type"], batch_size=params.get("batch_size", 16),
+            vad_threshold=params.get("vad_threshold", 0.35),
+            vad_speech_pad_ms=params.get("vad_speech_pad_ms", 800),
+            vad_min_silence_ms=params.get("vad_min_silence_ms", 2000),
+            no_speech_threshold=params.get("no_speech_threshold", 0.40),
+            normalize_loudness=params.get("normalize_loudness", False),
+            isolate_dialogue=params.get("isolate_dialogue", False),
         )
         profiler = SpanProfiler()
         result = self.use_case.execute(request, profiler)

@@ -105,3 +105,29 @@ def test_spa_routes_survive_reload(tmp_path):
         assert client.get("/api/v1/inexistente").status_code == 404
         assert client.get("/../pyproject.toml").status_code in (200, 404)
         assert "[project]" not in client.get("/..%2F..%2F..%2Fpyproject.toml").text
+
+
+def test_upload_job_with_vad_and_preprocessing_params(tmp_path):
+    with TestClient(create_app(home=tmp_path)) as client:
+        response = client.post("/api/v1/jobs", data={
+            "model_id": "small",
+            "device": "cpu",
+            "compute_type": "int8",
+            "language": "es",
+            "batch_size": "8",
+            "vad_threshold": "0.30",
+            "vad_speech_pad_ms": "1000",
+            "vad_min_silence_ms": "2500",
+            "no_speech_threshold": "0.35",
+            "normalize_loudness": "true",
+            "isolate_dialogue": "true",
+        }, files={"file": ("sample.wav", b"not-a-wav", "audio/wav")})
+        assert response.status_code == 202
+        job = response.json()
+        assert job["params"]["vad_threshold"] == 0.30
+        assert job["params"]["vad_speech_pad_ms"] == 1000
+        assert job["params"]["vad_min_silence_ms"] == 2500
+        assert job["params"]["no_speech_threshold"] == 0.35
+        assert job["params"]["normalize_loudness"] is True
+        assert job["params"]["isolate_dialogue"] is True
+

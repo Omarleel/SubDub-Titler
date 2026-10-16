@@ -85,3 +85,23 @@ class DemucsSeparator:
             # con todos los modelos cargados (16 GB) Windows desbordaría a memoria compartida.
             torch.cuda.empty_cache()
         return stems
+
+
+class LazyDemucsSeparator:
+    """Separador diferido: no instancia ni carga Demucs/PyTorch hasta que se llama a `separate`."""
+
+    def __init__(self, model_name: str = "htdemucs", device: str = "cuda") -> None:
+        self.model_name = model_name
+        self.device = device
+        self._delegate: DemucsSeparator | None = None
+
+    def separate(self, source: Path, workdir: Path) -> Stems:
+        if self._delegate is None:
+            self._delegate = DemucsSeparator(model_name=self.model_name, device=self.device)
+        return self._delegate.separate(source, workdir)
+
+    def release(self) -> None:
+        if self._delegate is not None:
+            self._delegate.release()
+            self._delegate = None
+

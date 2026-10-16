@@ -104,7 +104,7 @@ class FasterWhisperAdapter:
         self._load()
         profiler = active_profiler()
         with profiler.measure("audio.decode") if profiler else nullcontext():
-            audio = decode(request.source)
+            audio = decode(request.source, normalize_loudness=request.normalize_loudness)
         if request.vad_filter:
             tune_vad_threads()
         options = dict(
@@ -112,7 +112,15 @@ class FasterWhisperAdapter:
             language=None if request.language == "auto" else request.language,
             vad_filter=request.vad_filter,
             word_timestamps=request.word_timestamps,
+            no_speech_threshold=request.no_speech_threshold,
+            condition_on_previous_text=False,
         )
+        if request.vad_filter:
+            options["vad_parameters"] = dict(
+                threshold=request.vad_threshold,
+                min_silence_duration_ms=request.vad_min_silence_ms,
+                speech_pad_ms=request.vad_speech_pad_ms,
+            )
         with profiler.measure("asr.prepare_decode") if profiler else nullcontext():
             if request.batch_size > 1:
                 # Decodifica varios fragmentos VAD en paralelo: ~3.6x en RTX 5060 Ti.
@@ -125,12 +133,21 @@ class FasterWhisperAdapter:
                 segments, info = self._model.transcribe(audio, **options)
         # Consumir el generador: de otro modo mediríamos solo la preparación.
         with profiler.measure("asr.consume_generator") if profiler else nullcontext():
-            result_segments = tuple(
-                Segment(float(s.start), float(s.end), s.text.strip(), tuple(
+            result_segments = []
+            for s in segments:
+                text = s.text.strip()
+                if not text:
+                    continue
+                words = tuple(
                     Word(float(w.start), float(w.end), w.word) for w in (s.words or ())
-                ))
-                for s in segments if s.text.strip() and float(s.end) > float(s.start)
-            )
+                )
+                start = float(s.start)
+                end = float(s.end)
+                if words:
+                    end = max(end, words[-1].end + 0.12)
+                if end > start:
+                    result_segments.append(Segment(start, end, text, words))
+            result_segments = tuple(result_segments)
         return Transcript(
             segments=result_segments,
             language=info.language,

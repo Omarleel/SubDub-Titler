@@ -115,10 +115,12 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
         from subdub_titler.infrastructure.dub_factory import AsrTranscripts, default_dub_factory
         dub_factory = default_dub_factory(registry)
         transcripts = transcripts or AsrTranscripts(registry)
+    from subdub_titler.infrastructure.demucs_separator import LazyDemucsSeparator
     dub_use_case = DubUseCase(transcripts, dub_factory)
     dub_handler = DubJobHandler(dub_use_case, jobs, output_dir)
+    transcribe_use_case = TranscribeUseCase(registry, separator=LazyDemucsSeparator())
     worker = LocalJobWorker(jobs, {
-        "transcribe": TranscribeJobHandler(TranscribeUseCase(registry), output_dir),
+        "transcribe": TranscribeJobHandler(transcribe_use_case, output_dir),
         "dub": dub_handler,
         "dub-cue": DubCueJobHandler(dub_use_case, jobs, dub_handler),
     })
@@ -162,6 +164,12 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
         device: Annotated[str, Form()] = "cuda",
         compute_type: Annotated[str, Form()] = "float16",
         batch_size: Annotated[int, Form(ge=1, le=64)] = 16,
+        vad_threshold: Annotated[float, Form(ge=0.0, le=1.0)] = 0.35,
+        vad_speech_pad_ms: Annotated[int, Form(ge=0, le=5000)] = 800,
+        vad_min_silence_ms: Annotated[int, Form(ge=0, le=10000)] = 2000,
+        no_speech_threshold: Annotated[float, Form(ge=0.0, le=1.0)] = 0.40,
+        normalize_loudness: Annotated[bool, Form()] = False,
+        isolate_dialogue: Annotated[bool, Form()] = False,
     ) -> dict:
         if model_id not in {m.id for m in registry.list_models()}:
             raise HTTPException(422, "Modelo no registrado")
@@ -190,8 +198,21 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
                     target.write(chunk)
             if not length:
                 raise HTTPException(422, "Archivo vacío")
+            job_params: dict[str, object] = {"batch_size": batch_size}
+            if vad_threshold != 0.35:
+                job_params["vad_threshold"] = vad_threshold
+            if vad_speech_pad_ms != 800:
+                job_params["vad_speech_pad_ms"] = vad_speech_pad_ms
+            if vad_min_silence_ms != 2000:
+                job_params["vad_min_silence_ms"] = vad_min_silence_ms
+            if no_speech_threshold != 0.40:
+                job_params["no_speech_threshold"] = no_speech_threshold
+            if normalize_loudness:
+                job_params["normalize_loudness"] = True
+            if isolate_dialogue:
+                job_params["isolate_dialogue"] = True
             job = jobs.create(destination, original_name, model_id, language, device,
-                              compute_type, params={"batch_size": batch_size})
+                              compute_type, params=job_params)
             persisted = True
             worker.enqueue(job["id"])
             return job

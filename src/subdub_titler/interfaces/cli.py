@@ -31,11 +31,18 @@ error_console = Console(stderr=True)
 
 
 def _request(path: Path, model: str, device: str, compute_type: str,
-             language: str, beam_size: int, batch_size: int) -> TranscriptionRequest:
+             language: str, beam_size: int, batch_size: int,
+             vad_threshold: float = 0.35, vad_speech_pad_ms: int = 800,
+             vad_min_silence_ms: int = 2000, no_speech_threshold: float = 0.40,
+             normalize_loudness: bool = False,
+             isolate_dialogue: bool = False) -> TranscriptionRequest:
     return TranscriptionRequest(
         source=path.resolve(), model_id=model, device=device,
         compute_type=compute_type, language=language, beam_size=beam_size,
-        batch_size=batch_size,
+        batch_size=batch_size, vad_threshold=vad_threshold,
+        vad_speech_pad_ms=vad_speech_pad_ms, vad_min_silence_ms=vad_min_silence_ms,
+        no_speech_threshold=no_speech_threshold, normalize_loudness=normalize_loudness,
+        isolate_dialogue=isolate_dialogue,
     )
 
 
@@ -71,19 +78,35 @@ def transcribe(
     batch_size: Annotated[int, typer.Option(help="Fragmentos en paralelo; 1 = secuencial")] = 16,
     format: Annotated[str, typer.Option(help="srt|vtt")] = "srt",
     output: Annotated[Path | None, typer.Option()] = None,
+    vad_threshold: Annotated[float, typer.Option(help="Umbral de voz Silero VAD")] = 0.35,
+    speech_pad_ms: Annotated[int, typer.Option(help="Margen temporal de voz en ms")] = 800,
+    vad_min_silence_ms: Annotated[int, typer.Option(help="Silencio mínimo en ms")] = 2000,
+    no_speech_threshold: Annotated[float, typer.Option(help="Umbral de no-habla")] = 0.40,
+    normalize_loudness: Annotated[bool, typer.Option(help="Normalizar sonoridad EBU R128")] = False,
+    isolate_dialogue: Annotated[bool, typer.Option(help="Aislar voz con Demucs")] = False,
     profile: Annotated[Path | None, typer.Option(help="Reporte JSON de spans")] = None,
     cprofile: Annotated[Path | None, typer.Option(help="Archivo .pstats")] = None,
 ) -> None:
     """Generar subtítulos mediante faster-whisper (descarga pesos al primer uso)."""
     try:
-        request = _request(input, model, device, compute_type, language, beam_size, batch_size)
+        request = _request(
+            input, model, device, compute_type, language, beam_size, batch_size,
+            vad_threshold=vad_threshold, vad_speech_pad_ms=speech_pad_ms,
+            vad_min_silence_ms=vad_min_silence_ms, no_speech_threshold=no_speech_threshold,
+            normalize_loudness=normalize_loudness, isolate_dialogue=isolate_dialogue,
+        )
         target = output or input.with_suffix(f".{format}")
         if format not in ("srt", "vtt"):
             raise ValueError("Formato admitido: srt, vtt")
         registry = default_registry()
+        separator = None
+        if isolate_dialogue:
+            from subdub_titler.infrastructure.demucs_separator import LazyDemucsSeparator
+            separator = LazyDemucsSeparator(device=device)
+        use_case = TranscribeUseCase(registry, separator=separator)
         profiler = SpanProfiler()
         with profile_python(cprofile):
-            result = TranscribeUseCase(registry).execute(request, profiler)
+            result = use_case.execute(request, profiler)
             with profiler.measure("subtitles.write"):
                 write_subtitle(result, target, format)
         if profile:
@@ -496,8 +519,13 @@ def listen_panel(
     try:
         items = ListeningPanel(FfmpegAudioStore()).build(dict(zip(labels, workdirs, strict=True)),
                                                          output, limit, min_seconds, seed)
+    except FileNotFoundError as exc:
+        error_console.print(f"[red]Error: archivo o carpeta no encontrado: {exc}[/red]")
+        error_console.print("Pasa rutas a carpetas de doblaje con 'report.json'.")
+        raise typer.Exit(1) from exc
     except ValueError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+        error_console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(1) from exc
     title = "Panel de escucha · " + " / ".join(labels)
     page = output / "index.html"
     page.write_text(render_listening_page(items, title, f"{'-'.join(labels)}-{seed}"),

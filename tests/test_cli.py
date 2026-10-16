@@ -17,12 +17,26 @@ def test_missing_media_fails_cleanly():
     assert "Archivo no encontrado" in result.output
 
 
-def test_transcribe_help_contains_new_flags():
-    result = CliRunner(env={"COLUMNS": "160"}).invoke(app, ["transcribe", "--help"])
+def test_transcribe_options_registered():
+    import typer
+    cmd = typer.main.get_command(app).commands["transcribe"]
+    opts = {opt for p in cmd.params if hasattr(p, "opts") for opt in p.opts}
+    sec = {opt for p in cmd.params if hasattr(p, "secondary_opts") for opt in p.secondary_opts}
+    all_flags = opts | sec
+    assert "--align" in all_flags
+    assert "--no-align" in all_flags
+    assert "--diarize" in all_flags
+    assert "--no-diarize" in all_flags
+    assert "--netflix" in all_flags
+    assert "--no-netflix" in all_flags
+    assert "--suppress-hallucinations" in all_flags
+    assert "--no-suppress-hallucinations" in all_flags
+    assert "--two-pass" in all_flags
+    assert "--no-two-pass" in all_flags
+
+
+def test_transcribe_help():
+    result = CliRunner().invoke(app, ["transcribe", "--help"])
     assert result.exit_code == 0
-    assert "--suppress-hallucinations" in result.stdout
-    assert "--two-pass" in result.stdout
-    assert "--netflix" in result.stdout
-    assert "--diarize" in result.stdout
-    assert "--align" in result.stdout
+    assert "transcribe" in result.stdout.lower()
 

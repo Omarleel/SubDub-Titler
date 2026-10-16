@@ -4,15 +4,14 @@ import json
 import os
 import sys
 import time
-from contextlib import nullcontext
+from collections.abc import Generator
+from contextlib import contextmanager, nullcontext
+from collections.abc import Generator
 from contextvars import ContextVar
-from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Iterator
 
 from subdub_titler.domain.models import ProfileEvent
-
 
 _active: ContextVar["SpanProfiler | None"] = ContextVar("subdub_profile", default=None)
 
@@ -73,7 +72,7 @@ class SpanProfiler:
         self._memory = memory or TorchCudaMemory()
 
     @contextmanager
-    def activate(self) -> Iterator[None]:
+    def activate(self) -> Generator[None, None, None]:
         token = _active.set(self)
         try:
             yield
@@ -81,7 +80,7 @@ class SpanProfiler:
             _active.reset(token)
 
     @contextmanager
-    def measure(self, name: str) -> Iterator[None]:
+    def measure(self, name: str) -> Generator[None, None, None]:
         parent = self._stack[-1] if self._stack else None
         depth = len(self._stack)
         self._stack.append(name)
@@ -123,7 +122,7 @@ class SpanProfiler:
 
 
 @contextmanager
-def profile_python(stats_path: Path | None) -> Iterator[None]:
+def profile_python(stats_path: Path | None) -> Generator[None, None, None]:
     """Si hay ruta, produce .pstats para snakeviz/pstats (no inspecciona kernels GPU)."""
     if stats_path is None:
         yield

@@ -33,13 +33,63 @@ def install(model) -> bool:
     original = model._generate_iterative
 
     def generate(self, task, gen_config):
-        # Con un solo elemento, una pasada conjunta lanza menos kernels y es más rápida.
-        if task.batch_size == 1:
+        at = getattr(gen_config, "text_guidance", None)
+        as_ = getattr(gen_config, "reference_guidance", None)
+        beta = getattr(gen_config, "accent_guidance_beta", 0.0)
+        is_dual = (at is not None or as_ is not None) and (at != as_)
+        is_aag = (beta > 0.0)
+        # Con un solo elemento y CFG simétrico estándar sin AAG, la pasada conjunta original
+        # lanza menos kernels. Con CFG dual (at != as) o AAG (beta > 0), lote 1 pasa por
+        # _generate_split para aplicar las ramas auxiliares correspondientes.
+        if task.batch_size == 1 and not is_dual and not is_aag:
             return original(task, gen_config)
         return _generate_split(self, task, gen_config)
 
     model._generate_iterative = types.MethodType(generate, model)
     return True
+
+
+def aag_cfg_log_probs(
+    u_logits,
+    c_logits,
+    t_logits,
+    at: float,
+    as_: float,
+    proxy_src_logits: list | None = None,
+    proxy_tgt_logits: list | None = None,
+    beta: float = 0.0,
+):
+    """Fórmula de CFG con Accent Analogy Guidance (Cho & Lee, 2026):
+    ℓ_AAG = ℓu + at · (ℓt − ℓu) + as · (ℓc − ℓt) − (β / M) · Σm [ℓproxy_src,m − ℓproxy_tgt,m]
+    Normalizado con log_softmax sobre las distribuciones combinadas.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    u_log = F.log_softmax(u_logits, dim=-1)
+    c_log = F.log_softmax(c_logits, dim=-1)
+    if t_logits is None or at == as_:
+        # Cuando at == as_, la fórmula ℓu + as*(ℓc - ℓu) equivale a c + (as - 1)*(c - u).
+        base_guided = c_log + (as_ - 1.0) * (c_log - u_log)
+    else:
+        t_log = F.log_softmax(t_logits, dim=-1)
+        base_guided = u_log + at * (t_log - u_log) + as_ * (c_log - t_log)
+
+    if beta > 0.0 and proxy_src_logits and proxy_tgt_logits:
+        M = min(len(proxy_src_logits), len(proxy_tgt_logits))
+        if M > 0:
+            bias = torch.zeros_like(base_guided)
+            for m in range(M):
+                ps_log = F.log_softmax(proxy_src_logits[m], dim=-1)
+                pt_log = F.log_softmax(proxy_tgt_logits[m], dim=-1)
+                bias = bias + (ps_log - pt_log)
+            base_guided = base_guided - (beta / float(M)) * bias
+
+    return F.log_softmax(base_guided, dim=-1)
+
+
+def dual_cfg_log_probs(u_logits, c_logits, t_logits, at: float, as_: float):
+    return aag_cfg_log_probs(u_logits, c_logits, t_logits, at, as_)
 
 
 def _padded_batch(torch, inputs, lengths, width, device, pad_id, channels):
@@ -74,10 +124,26 @@ def _schedules(time_steps, lengths, channels, num_step):
 
 def _generate_split(self, task, gen_config):
     import torch
-    from omnivoice.models.omnivoice import _get_time_steps, _gumbel_sample
+    from omnivoice.models.omnivoice import _filter_top_k, _get_time_steps, _gumbel_sample
 
     batch, channels = task.batch_size, self.config.num_audio_codebook
     vocab, pad_id, device = self.config.audio_vocab_size, self.config.audio_mask_id, self.device
+
+    at = getattr(gen_config, "text_guidance", None)
+    as_ = getattr(gen_config, "reference_guidance", None)
+    beta = getattr(gen_config, "accent_guidance_beta", 0.0)
+    proxies = getattr(gen_config, "accent_proxies", None) or ()
+    if at is None:
+        at = 1.0 + float(gen_config.guidance_scale)
+    if as_ is None:
+        as_ = 1.0 + float(gen_config.guidance_scale)
+    need_text_branch = (at != as_)
+    need_aag = (beta > 0.0 and len(proxies) > 0)
+    if beta > 0.0 and not proxies:
+        raise ValueError(
+            "Modo AAG activo (accent_guidance_beta > 0), pero no se suministraron proxies válidos"
+        )
+
     inputs = [
         self._prepare_inference_inputs(task.texts[i], task.target_lens[i], task.ref_texts[i],
                                        task.ref_audio_tokens[i], task.langs[i],
@@ -89,6 +155,56 @@ def _generate_split(self, task, gen_config):
     cond = _padded_batch(torch, inputs, cond_lens, max(cond_lens), device, pad_id, channels)
     uncond = _padded_batch(torch, inputs, target_lens, max(target_lens), device, pad_id,
                            channels)
+
+    if need_text_branch:
+        text_inputs = [
+            self._prepare_inference_inputs(task.texts[i], task.target_lens[i], None,
+                                           None, task.langs[i], task.instructs[i],
+                                           gen_config.denoise)
+            for i in range(batch)
+        ]
+        text_lens = [item["input_ids"].size(2) for item in text_inputs]
+        text_branch = _padded_batch(torch, text_inputs, text_lens, max(text_lens), device,
+                                    pad_id, channels)
+    else:
+        text_inputs = None
+        text_lens = None
+        text_branch = None
+
+    proxy_src_branches = []
+    proxy_src_lens_list = []
+    proxy_tgt_branches = []
+    proxy_tgt_lens_list = []
+    if need_aag:
+        for p in proxies:
+            s_in = [
+                self._prepare_inference_inputs(
+                    task.texts[i], task.target_lens[i], p.src_text,
+                    p.src_audio_tokens, task.langs[i], task.instructs[i],
+                    gen_config.denoise,
+                )
+                for i in range(batch)
+            ]
+            s_lens = [item["input_ids"].size(2) for item in s_in]
+            proxy_src_branches.append(_padded_batch(
+                torch, s_in, s_lens, max(s_lens), device, pad_id, channels
+            ))
+            proxy_src_lens_list.append(s_lens)
+
+            t_in = [
+                self._prepare_inference_inputs(
+                    task.texts[i], task.target_lens[i], p.tgt_text,
+                    p.tgt_audio_tokens, task.langs[i], task.instructs[i],
+                    gen_config.denoise,
+                )
+                for i in range(batch)
+            ]
+            t_lens = [item["input_ids"].size(2) for item in t_in]
+            proxy_tgt_branches.append(_padded_batch(
+                torch, t_in, t_lens, max(t_lens), device, pad_id, channels
+            ))
+            proxy_tgt_lens_list.append(t_lens)
+
     tokens = torch.full((batch, channels, max(target_lens)), pad_id, dtype=torch.long,
                         device=device)
     time_steps = _get_time_steps(t_start=0.0, t_end=1.0, num_step=gen_config.num_step,
@@ -108,14 +224,33 @@ def _generate_split(self, task, gen_config):
     for step in range(gen_config.num_step):
         cond_states = hidden(*cond)
         uncond_states = hidden(*uncond)
+        text_states = hidden(*text_branch) if need_text_branch else None
+        ps_states = [hidden(*b) for b in proxy_src_branches] if need_aag else None
+        pt_states = [hidden(*b) for b in proxy_tgt_branches] if need_aag else None
         for i in range(batch):
             count = schedules[i][step]
             if count <= 0:
                 continue
             c_len, t_len = cond_lens[i], target_lens[i]
-            pred, scores = self._predict_tokens_with_scoring(
-                logits(cond_states, i, c_len - t_len, t_len),
-                logits(uncond_states, i, 0, t_len), gen_config)
+            c_logits = logits(cond_states, i, c_len - t_len, t_len)
+            u_logits = logits(uncond_states, i, 0, t_len)
+            t_logits = (logits(text_states, i, text_lens[i] - t_len, t_len)
+                        if need_text_branch else None)
+            ps_logits = ([logits(ps_states[m], i, proxy_src_lens_list[m][i] - t_len, t_len)
+                          for m in range(len(proxies))] if need_aag else None)
+            pt_logits = ([logits(pt_states[m], i, proxy_tgt_lens_list[m][i] - t_len, t_len)
+                          for m in range(len(proxies))] if need_aag else None)
+
+            log_probs = aag_cfg_log_probs(
+                u_logits, c_logits, t_logits, at, as_, ps_logits, pt_logits, beta
+            )
+            log_probs[..., pad_id] = -float("inf")
+            if gen_config.class_temperature > 0.0:
+                filtered_probs = _filter_top_k(log_probs, ratio=0.1)
+                pred = _gumbel_sample(filtered_probs, gen_config.class_temperature).argmax(dim=-1)
+            else:
+                pred = log_probs.argmax(dim=-1)
+            scores = log_probs.max(dim=-1)[0]
             scores = scores - layer_ids * gen_config.layer_penalty_factor
             if gen_config.position_temperature > 0.0:
                 scores = _gumbel_sample(scores, gen_config.position_temperature)
@@ -127,4 +262,12 @@ def _generate_split(self, task, gen_config):
             current.copy_(flat.view_as(current))
             cond[0][i:i + 1, :, c_len - t_len:c_len] = current
             uncond[0][i:i + 1, :, :t_len] = current
+            if need_text_branch:
+                text_branch[0][i:i + 1, :, text_lens[i] - t_len:text_lens[i]] = current
+            if need_aag:
+                for m in range(len(proxies)):
+                    ps_l = proxy_src_lens_list[m][i]
+                    pt_l = proxy_tgt_lens_list[m][i]
+                    proxy_src_branches[m][0][i:i + 1, :, ps_l - t_len:ps_l] = current
+                    proxy_tgt_branches[m][0][i:i + 1, :, pt_l - t_len:pt_l] = current
     return [tokens[i, :, :target_lens[i]] for i in range(batch)]

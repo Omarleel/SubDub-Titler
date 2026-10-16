@@ -53,6 +53,7 @@ from subdub_titler.domain.ports import (
     Mixer,
     Muxer,
     Profiler,
+    ProsodyAnalyzer,
     Releasable,
     SourceSeparator,
     SpeakerDiarizer,
@@ -83,6 +84,7 @@ class DubPipeline:
     # del de la evaluación final, para no optimizar contra la misma métrica que se reporta.
     verifier: ClipTranscriber | None = None
     speaker_encoder: SpeakerEncoder | None = None
+    prosody: ProsodyAnalyzer | None = None
 
 
 class DubComponentFactory(Protocol):
@@ -214,7 +216,7 @@ class DubUseCase:
 
         with profiler.measure("dub.fit"):
             plan = self._plan(pipe.cloner, cues, candidates, media_end,
-                              request.target_language, voices)
+                              request.target_language, voices, request)
 
         if request.reference_candidates > 1 and pipe.verifier and pipe.speaker_encoder:
             progress("voz", 0.4)
@@ -225,13 +227,14 @@ class DubUseCase:
                 voices = chosen
                 with profiler.measure("dub.fit"):
                     plan = self._plan(pipe.cloner, cues, candidates, media_end,
-                                      request.target_language, voices)
+                                      request.target_language, voices, request)
             if not request.evaluate:
                 _release(pipe.speaker_encoder)
 
         progress("sintetizar", 0.45)
         with profiler.measure("dub.tts.generate"):
-            clips = self._synthesize(pipe.cloner, plan, request, voices, progress)
+            clips = self._synthesize(pipe.cloner, plan, request, voices, progress,
+                                     pipe=pipe, voice_source=voice_source)
         if request.verify_attempts and pipe.verifier is not None:
             progress("verificar", 0.8)
             with profiler.measure("dub.verify"):
@@ -378,7 +381,12 @@ class DubUseCase:
                 tight = sum(n / c.slot_seconds > self._policy.max_speed
                             for n, c in zip(natural, own, strict=True)) / len(own)
                 tight_default = tight if tight_default is None else tight_default
-                score = similarity - cer - max(0.0, tight - tight_default)
+                quality = (pipe.audio.check_audio_quality(voice.clip)
+                           if hasattr(pipe.audio, "check_audio_quality") else None)
+                sat_penalty = 0.5 if (quality and quality.is_saturated) else 0.0
+                quiet_penalty = 0.3 if (quality and quality.is_too_quiet) else 0.0
+                score = (similarity - cer - max(0.0, tight - tight_default)
+                         - sat_penalty - quiet_penalty)
                 if best is None or score > best[0]:
                     best = (score, voice)
             chosen[speaker] = best[1]
@@ -425,7 +433,9 @@ class DubUseCase:
 
     def _plan(self, cloner: VoiceCloner, cues: Sequence[DubCue],
               candidates: Sequence[Sequence[Candidate]], media_end: float, language: str,
-              voices: dict[str, Voice]) -> list[DubbedCue]:
+              voices: dict[str, Voice], request: DubRequest | None = None) -> list[DubbedCue]:
+        policy = (replace(self._policy, speed_penalty=request.speed_penalty)
+                  if request else self._policy)
         # Duración natural con la voz de cada hablante (el ritmo depende de la referencia).
         natural: list[list[float]] = [[] for _ in cues]
         for speaker, voice in voices.items():
@@ -435,11 +445,11 @@ class DubUseCase:
             for i in positions:
                 natural[i] = [next(estimates) for _ in candidates[i]]
         # Huecos repartidos según la mejor traducción; después se elige candidato por ranura.
-        slots = plan_slots(cues, self._policy, media_end, [n[0] for n in natural])
+        slots = plan_slots(cues, policy, media_end, [n[0] for n in natural])
         plan = []
         for cue, options, durations, slot in zip(cues, candidates, natural, slots, strict=True):
-            chosen = choose_candidate(options, durations, slot.duration, self._policy)
-            decision = fit_decision(durations[chosen], slot.duration, self._policy)
+            chosen = choose_candidate(options, durations, slot.duration, policy)
+            decision = fit_decision(durations[chosen], slot.duration, policy)
             plan.append(DubbedCue(
                 index=cue.index, start=slot.start, source_text=cue.source_text,
                 target_text=options[chosen].text, slot_seconds=round(slot.duration, 3),
@@ -452,7 +462,9 @@ class DubUseCase:
 
     @staticmethod
     def _synthesize(cloner: VoiceCloner, plan: Sequence[DubbedCue], request: DubRequest,
-                    voices: dict[str, Voice], progress: Progress) -> dict[int, AudioClip]:
+                    voices: dict[str, Voice], progress: Progress,
+                    pipe: DubPipeline | None = None,
+                    voice_source: Path | None = None) -> dict[int, AudioClip]:
         clips: dict[int, AudioClip] = {}
         for speaker, voice in voices.items():
             # Cubetas por duración: el coste de un lote lo marca su elemento más largo.
@@ -460,10 +472,40 @@ class DubUseCase:
                              key=lambda c: c.target_seconds)
             for first in range(0, len(ordered), request.tts_batch):
                 batch = ordered[first:first + request.tts_batch]
+                # Referencia por frase (Fase 5): si está activada y el cue dura >= 2.0 s
+                if request.per_phrase_reference and pipe and voice_source:
+                    prompt_list = []
+                    for c in batch:
+                        p_handle = voice.handle
+                        if c.slot_seconds >= 2.0:
+                            try:
+                                phrase_clip = pipe.audio.load(voice_source, cloner.sample_rate,
+                                                              c.start, c.start + c.slot_seconds)
+                                q = (pipe.audio.check_audio_quality(phrase_clip)
+                                     if hasattr(pipe.audio, "check_audio_quality") else None)
+                                if not q or (not q.is_saturated and not q.is_too_quiet):
+                                    p_handle = cloner.prepare_voice(phrase_clip, c.source_text)
+                            except Exception:
+                                p_handle = voice.handle
+                        prompt_list.append(p_handle)
+                    voice_arg = prompt_list if len(prompt_list) > 1 else prompt_list[0]
+                else:
+                    voice_arg = voice.handle
+
                 generated = cloner.synthesize([c.target_text for c in batch],
                                               [c.target_seconds for c in batch],
-                                              request.target_language, voice.handle)
-                clips.update({c.index: clip for c, clip in zip(batch, generated, strict=True)})
+                                              request.target_language, voice_arg)
+                for c, clip in zip(batch, generated, strict=True):
+                    # Transferencia de prosodia y energía (Fase 5)
+                    if request.prosody_transfer and pipe and pipe.prosody and voice_source:
+                        try:
+                            orig_clip = pipe.audio.load(voice_source, cloner.sample_rate,
+                                                        c.start, c.start + c.slot_seconds)
+                            target_p = pipe.prosody.analyze(orig_clip)
+                            clip = pipe.prosody.transfer_energy(clip, target_p)
+                        except Exception:
+                            pass
+                    clips[c.index] = clip
                 progress("sintetizar", 0.45 + 0.4 * len(clips) / len(plan))
         return clips
 

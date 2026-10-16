@@ -204,7 +204,16 @@ export function App() {
         </>}
 
         {route === 'precision' && <QualityPage jobs={transcriptions} job={job} onSelect={id => navigate({ job: id })} />}
-        {route === 'doblaje' && <DubPage jobs={jobs} job={job} onSelect={id => navigate({ job: id })} />}
+        {route === 'doblaje' && (
+          <DubPage
+            jobs={jobs}
+            job={job}
+            onSelect={(id, created) => {
+              if (created) setJobs(prev => [created, ...prev.filter(j => j.id !== created.id)])
+              navigate({ job: id })
+            }}
+          />
+        )}
         {route === 'rendimiento' && <div className={ui.panel}><div className={ui.panelHead}><h2 className={ui.panelTitle}>Tiempo por etapa</h2><span className={ui.step}>{job?.original_name ?? 'SIN TRABAJO'}</span></div>
           {job?.kind === 'dub' && dubbing && job.profiling ? <>
             <div className={`${ui.metrics} max-w-[760px]`}>

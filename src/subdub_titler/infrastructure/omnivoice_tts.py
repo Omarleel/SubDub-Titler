@@ -6,6 +6,7 @@ import threading
 from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 
 from subdub_titler.domain.dubbing import AudioClip
 from subdub_titler.infrastructure.profiling import active_profiler
@@ -59,6 +60,11 @@ class OmniVoiceModel:
 class OmniVoiceSettings:
     num_step: int = 16
     guidance_scale: float = 2.0
+    text_guidance: float | None = None  # at (CFG dual: p. ej. 5.0)
+    reference_guidance: float | None = None  # as (CFG dual: p. ej. 2.0)
+    accent_guidance_beta: float = 0.0  # β para AAG (0.0 = desactivado)
+    accent_proxy_dir: Path | None = None  # Carpeta con proxies guardados o None
+    accent_proxies: tuple | None = None  # Tupla de AccentProxyPair precargados
     position_temperature: float = 5.0
     seed: int | None = 0  # misma semilla + mismas formas = misma salida (reproducible)
     split_cfg: bool = True  # ver omnivoice_fast
@@ -117,6 +123,7 @@ class OmniVoiceCloner:
     def synthesize(self, texts: Sequence[str], durations: Sequence[float], language: str,
                    voice: object, variant: int = 0) -> list[AudioClip]:
         import torch
+        from omnivoice.models.omnivoice import OmniVoiceGenerationConfig
         if not texts:
             return []
         model = self._model()
@@ -126,16 +133,38 @@ class OmniVoiceCloner:
         # 23 min): CER 4.75 % sin reintentos, 4.07 % reintentando a 16 pasos, 3.44 % a 32.
         steps = self.settings.num_step if variant == 0 else (
             self.settings.retry_num_step or min(64, self.settings.num_step * 2))
+        gen_config = OmniVoiceGenerationConfig(
+            num_step=steps,
+            guidance_scale=self.settings.guidance_scale,
+            position_temperature=self.settings.position_temperature,
+            class_temperature=0.0,
+            postprocess_output=False,
+            pad_duration=0.0,
+            fade_duration=self.settings.fade_seconds,
+        )
+        if self.settings.text_guidance is not None:
+            gen_config.text_guidance = self.settings.text_guidance
+        if self.settings.reference_guidance is not None:
+            gen_config.reference_guidance = self.settings.reference_guidance
+        if self.settings.accent_guidance_beta > 0.0:
+            gen_config.accent_guidance_beta = self.settings.accent_guidance_beta
+            proxies = self.settings.accent_proxies
+            if proxies is None and self.settings.accent_proxy_dir is not None:
+                from subdub_titler.infrastructure.accent_proxy import AccentProxySet
+                pset = AccentProxySet.load(self.settings.accent_proxy_dir, device=model.device)
+                proxies = pset.pairs
+            if not proxies:
+                raise ValueError(
+                    "Modo AAG activo (accent_guidance_beta > 0), pero no se encontraron "
+                    "proxies válidos"
+                )
+            gen_config.accent_proxies = proxies
         with torch.inference_mode():
+            prompts = voice if isinstance(voice, list) else [voice] * len(texts)
             audios = model.generate(
-                text=list(texts), language=language, voice_clone_prompt=[voice] * len(texts),
-                duration=[float(d) for d in durations], num_step=steps,
-                guidance_scale=self.settings.guidance_scale,
-                position_temperature=self.settings.position_temperature,
-                class_temperature=0.0,
-                # Duración exacta: sin recorte de silencios ni relleno (añadía 2 x 0.1 s).
-                postprocess_output=False, pad_duration=0.0,
-                fade_duration=self.settings.fade_seconds,
+                text=list(texts), language=language, voice_clone_prompt=prompts,
+                duration=[float(d) for d in durations],
+                generation_config=gen_config,
             )
         if torch.cuda.is_available():
             # Cada lote tiene otra longitud: sin vaciar, la caché del asignador se fragmenta

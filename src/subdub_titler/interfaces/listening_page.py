@@ -57,8 +57,9 @@ td.n { font-variant-numeric:tabular-nums; }
 <main>
 <h1>Panel de escucha</h1>
 <p class="lead">Escucha la voz original y después cada voz doblada. Puntúa el
-<b>acento</b> (1 = claramente extranjero, 5 = nativo) y el <b>parecido</b> con la voz original
-(1 = otra persona, 5 = la misma). El orden de las voces es aleatorio en cada frase.</p>
+<b>acento</b> (1 = claramente extranjero, 5 = nativo), el <b>parecido</b> con la voz original
+(1 = otra persona, 5 = la misma) y la <b>naturalidad/expresividad</b> (1 = robótica o plana,
+5 = humana y expresiva). El orden de las voces es aleatorio en cada frase.</p>
 <section id="results" class="card"></section>
 <div id="items"></div>
 </main>
@@ -70,7 +71,7 @@ const PANEL = __PANEL__;
 const KEY = "listen-panel:" + PANEL.id;
 let ratings = {};
 try { ratings = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) { ratings = {}; }
-const total = PANEL.items.reduce((n, item) => n + item.clips.length * 2, 0);
+const total = PANEL.items.reduce((n, item) => n + item.clips.length * 3, 0);
 
 function persist() {
   try { localStorage.setItem(KEY, JSON.stringify(ratings)); } catch (e) {}
@@ -119,8 +120,10 @@ PANEL.items.forEach((item, i) => {
     const label = document.createElement("div");
     label.className = "label";
     label.textContent = "Voz " + (j + 1);
-    box.append(label, player(clip.file), scale(clip.file, "accent", "Acento (1–5)"),
-               scale(clip.file, "similarity", "Parecido (1–5)"));
+    box.append(label, player(clip.file),
+               scale(clip.file, "accent", "Acento (1–5)"),
+               scale(clip.file, "similarity", "Parecido (1–5)"),
+               scale(clip.file, "naturalness", "Naturalidad (1–5)"));
     card.append(box);
   });
   list.append(card);
@@ -134,13 +137,15 @@ function answers() {
 function summary() {
   const by = {};
   for (const a of answers()) {
-    const s = by[a.variant] = by[a.variant] || {accent: [], similarity: []};
+    const s = by[a.variant] = by[a.variant] || {accent: [], similarity: [], naturalness: []};
     if (a.accent) s.accent.push(a.accent);
     if (a.similarity) s.similarity.push(a.similarity);
+    if (a.naturalness) s.naturalness.push(a.naturalness);
   }
   const mean = xs => xs.length ? +(xs.reduce((x, y) => x + y, 0) / xs.length).toFixed(2) : null;
   return Object.fromEntries(Object.entries(by).map(([k, s]) => [k, {
-    accent: mean(s.accent), similarity: mean(s.similarity), rated: s.accent.length}]));
+    accent: mean(s.accent), similarity: mean(s.similarity),
+    naturalness: mean(s.naturalness), rated: s.accent.length}]));
 }
 
 document.getElementById("show").onclick = () => {
@@ -148,11 +153,12 @@ document.getElementById("show").onclick = () => {
   box.replaceChildren();
   const table = document.createElement("table");
   table.innerHTML = "<thead><tr><th>Variante</th><th>Acento</th><th>Parecido</th>" +
-                    "<th>Voces puntuadas</th></tr></thead>";
+                    "<th>Naturalidad</th><th>Voces puntuadas</th></tr></thead>";
   const body = table.createTBody();
   for (const [name, s] of Object.entries(summary())) {
-    const row = body.insertRow();
-    [name, s.accent ?? "–", s.similarity ?? "–", s.rated].forEach((value, i) => {
+    const rowVals = [name, s.accent ?? "–", s.similarity ?? "–",
+                     s.naturalness ?? "–", s.rated];
+    rowVals.forEach((value, i) => {
       const cell = row.insertCell();
       cell.textContent = value;
       if (i) cell.className = "n";

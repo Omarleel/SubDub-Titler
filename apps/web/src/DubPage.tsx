@@ -59,13 +59,14 @@ function vtt(track: DubCue[]) {
     `${stamp(c.start)} --> ${stamp(c.start + Math.max(c.generated_seconds, 0.3))}\n${c.target_text}\n`).join('\n')
 }
 
-type Props = { jobs: Job[]; job: Job | undefined; onSelect: (id: string) => void }
+type Props = { jobs: Job[]; job: Job | undefined; onSelect: (id: string, created?: Job) => void }
 
 export function DubPage({ jobs, job, onSelect }: Props) {
+  const [optimisticDub, setOptimisticDub] = useState<Job | null>(null)
   const sources = jobs.filter(j => j.kind === 'transcribe' && j.status === 'completed' && j.transcript)
   const source = job?.kind === 'dub' ? jobs.find(j => j.id === job.parent_id) : job?.kind === 'transcribe' ? job : sources[0]
   const dubsOfSource = jobs.filter(j => j.kind === 'dub' && j.parent_id === source?.id)
-  const dub = job?.kind === 'dub' ? job : dubsOfSource[0]
+  const dub = optimisticDub ?? (job?.kind === 'dub' ? job : dubsOfSource[0])
   const result = dub?.status === 'completed' ? dub.result : null
   const track = result?.track ?? []
   const quality = useMemo(() => new Map((result?.cue_quality ?? []).map(q => [q.index, q])), [result])
@@ -129,11 +130,36 @@ export function DubPage({ jobs, job, onSelect }: Props) {
   }
 
   async function launch() {
-    if (!source) return
+    if (!source || busy) return
     setBusy(true); setError(null)
-    try { const created = await api.createDub(source.id, options); onSelect(created.id) }
-    catch (e) { setError(String(e)) }
-    finally { setBusy(false) }
+    const tempJob: Job = {
+      id: `temp-${Date.now()}`,
+      original_name: source.original_name,
+      status: 'queued',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      model_id: source.model_id,
+      language: source.language,
+      error: null,
+      transcript: null,
+      profiling: null,
+      kind: 'dub',
+      parent_id: source.id,
+      params: { ...options },
+      result: null,
+      stage: 'inicio',
+      progress: 0,
+    }
+    setOptimisticDub(tempJob)
+    try {
+      const created = await api.createDub(source.id, options)
+      onSelect(created.id, created)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+      setOptimisticDub(null)
+    }
   }
 
   const canRegenerate = !!cue && !!text.trim() && text.trim() !== cue.target_text && !regenerating
@@ -214,21 +240,73 @@ export function DubPage({ jobs, job, onSelect }: Props) {
             onChange={e => setOptions({ ...options, evaluate: e.target.checked })} /> Medir calidad</label>
           <label className="text-[12px] text-[#aebcd0] flex items-center gap-[7px] py-[9px]" title="Detecta a cada hablante y clona su voz por separado"><input type="checkbox" checked={options.diarize}
             onChange={e => setOptions({ ...options, diarize: e.target.checked })} /> Varios hablantes</label>
-          <button className={`${ui.primaryBtn} w-auto ml-auto min-w-[200px]`} disabled={!source || busy} onClick={launch}>{busy ? 'Enviando…' : '◐ Doblar'}</button>
+          <button
+            className={`${ui.primaryBtn} w-auto ml-auto min-w-[200px] flex items-center justify-center gap-[8px] transition-all duration-200`}
+            disabled={!source || busy}
+            onClick={launch}
+          >
+            {busy ? (
+              <>
+                <span className="inline-block w-[14px] h-[14px] border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span>Iniciando doblaje…</span>
+              </>
+            ) : (
+              <>
+                <span className="text-[14px]">◐</span>
+                <span>Doblar</span>
+              </>
+            )}
+          </button>
         </div>
-        {dubsOfSource.length > 0 && <div className="flex gap-[8px] flex-wrap mt-[16px]" role="list" aria-label="Doblajes de esta transcripción">
-          {dubsOfSource.map(d => <button key={d.id} role="listitem" onClick={() => onSelect(d.id)}
-            className={`${ui.ghostBtn} ${d.id === dub?.id ? 'border-accent text-white' : ''}`}>
-            {String(d.params.target_language ?? '').toUpperCase()} · {String(d.params.num_step)} pasos · {d.status === 'completed' ? new Date(d.created_at).toLocaleTimeString() : d.status === 'failed' ? 'error' : `${Math.round((d.progress ?? 0) * 100)} %`}</button>)}
-        </div>}
+        {(() => {
+          const visibleDubs = optimisticDub && optimisticDub.parent_id === source?.id
+            ? [optimisticDub, ...dubsOfSource.filter(d => d.id !== optimisticDub.id)]
+            : dubsOfSource
+          return visibleDubs.length > 0 ? (
+            <div className="flex gap-[8px] flex-wrap mt-[16px]" role="list" aria-label="Doblajes de esta transcripción">
+              {visibleDubs.map(d => (
+                <button
+                  key={d.id}
+                  role="listitem"
+                  onClick={() => onSelect(d.id)}
+                  className={`${ui.ghostBtn} ${d.id === dub?.id ? 'border-accent text-white' : ''}`}
+                >
+                  {String(d.params.target_language ?? '').toUpperCase()} · {String(d.params.num_step)} pasos ·{' '}
+                  {d.status === 'completed'
+                    ? new Date(d.created_at).toLocaleTimeString()
+                    : d.status === 'failed'
+                    ? 'error'
+                    : `${Math.round((d.progress ?? 0) * 100)} %`}
+                </button>
+              ))}
+            </div>
+          ) : null
+        })()}
       </section>
 
-      {dub && dub.status === 'failed' && <section className={ui.panel}><p className={ui.errorText}>{dub.error}</p></section>}
-      {dub && (dub.status === 'queued' || dub.status === 'running') && <section className={ui.panel} aria-live="polite">
-        <div className="flex justify-between text-[13px] text-[#c9d4e4] mb-[10px]"><span>{STAGE_LABEL[dub.stage ?? 'inicio'] ?? dub.stage ?? 'En cola'}…</span><span>{Math.round((dub.progress ?? 0) * 100)} %</span></div>
-        <div className="h-[8px] bg-[#222c40] rounded-[10px] overflow-hidden"><div className="h-full bg-[linear-gradient(90deg,#6d73f9,#5cbbd7)] transition-[width]" style={{ width: `${(dub.progress ?? 0) * 100}%` }} /></div>
-        <p className={ui.hint}>La primera vez se descargan los modelos (OmniVoice, NLLB, Demucs y los evaluadores): puede tardar varios minutos.</p>
-      </section>}
+      {dub && dub.status === 'failed' && (
+        <section className={`${ui.panel} animate-fade-in`}><p className={ui.errorText}>{dub.error}</p></section>
+      )}
+      {dub && (dub.status === 'queued' || dub.status === 'running') && (
+        <section className={`${ui.panel} animate-fade-in`} aria-live="polite">
+          <div className="flex justify-between items-center text-[13px] text-[#c9d4e4] mb-[10px]">
+            <span className="flex items-center gap-[8px]">
+              <span className="inline-block w-[8px] h-[8px] rounded-full bg-accent animate-ping" />
+              <span>{STAGE_LABEL[dub.stage ?? 'inicio'] ?? dub.stage ?? 'En cola'}…</span>
+            </span>
+            <span className="font-semibold text-accent">{Math.round((dub.progress ?? 0) * 100)} %</span>
+          </div>
+          <div className="h-[8px] bg-[#222c40] rounded-[10px] overflow-hidden p-[1px]">
+            <div
+              className="h-full rounded-[8px] shimmer-gradient transition-[width] duration-500 ease-out"
+              style={{ width: `${Math.max((dub.progress ?? 0) * 100, 4)}%` }}
+            />
+          </div>
+          <p className={ui.hint}>
+            La primera vez se descargan los modelos (OmniVoice, NLLB, Demucs y los evaluadores): puede tardar varios minutos.
+          </p>
+        </section>
+      )}
 
       {result && dub && source && <>
         <section className={`${ui.panel} mb-[20px]`} aria-labelledby="dub-summary">

@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+
 from subdub_titler.interfaces.api import create_app
 
 
@@ -20,6 +21,16 @@ def test_reject_untrusted_upload(tmp_path):
         assert result.status_code == 415
 
 
+def test_upload_exceeds_max_bytes(tmp_path, monkeypatch):
+    monkeypatch.setenv("SUBDUB_MAX_UPLOAD_BYTES", "10")
+    with TestClient(create_app(home=tmp_path)) as client:
+        result = client.post("/api/v1/jobs", data={
+            "model_id": "small", "device": "cpu", "compute_type": "int8", "language": "es"
+        }, files={"file": ("video.mp4", b"0123456789extra_bytes", "video/mp4")})
+        assert result.status_code == 413
+        assert "excede" in result.text
+
+
 def test_404_job(tmp_path):
     with TestClient(create_app(home=tmp_path)) as client:
         assert client.get("/api/v1/jobs/unknown").status_code == 404
@@ -28,6 +39,7 @@ def test_404_job(tmp_path):
 def test_complete_job_via_adapter_contract(tmp_path):
     """E2E real API/SQLite/worker/SRT con backend falso, sin GPU ni pesos."""
     import time
+
     from subdub_titler.domain.models import ModelDescriptor, Segment, Transcript
     from subdub_titler.infrastructure.registry import ModelRegistry
 
@@ -66,8 +78,9 @@ def test_complete_job_via_adapter_contract(tmp_path):
 
 def test_frontend_assets_served_as_javascript(tmp_path):
     """Windows puede registrar .js como text/plain; los módulos ES lo rechazan."""
-    import pytest
     from pathlib import Path
+
+    import pytest
     assets = Path(__file__).resolve().parents[1] / "apps" / "web" / "dist" / "assets"
     bundles = list(assets.glob("*.js")) if assets.is_dir() else []
     if not bundles:
@@ -79,8 +92,9 @@ def test_frontend_assets_served_as_javascript(tmp_path):
 
 def test_spa_routes_survive_reload(tmp_path):
     """Recargar /precision o /rendimiento debe devolver la UI, no 404; /api sigue siendo JSON."""
-    import pytest
     from pathlib import Path
+
+    import pytest
     if not (Path(__file__).resolve().parents[1] / "apps" / "web" / "dist").is_dir():
         pytest.skip("Frontend no compilado")
     with TestClient(create_app(home=tmp_path)) as client:

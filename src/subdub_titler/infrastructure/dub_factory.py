@@ -82,6 +82,7 @@ class DubFactory:
 
     def build(self, request: DubRequest) -> DubPipeline:
         from subdub_titler.infrastructure.media import FfmpegAudioStore, FfmpegMixer, FfmpegMuxer
+        from subdub_titler.infrastructure.prosody import NumpyProsodyAnalyzer
         from subdub_titler.infrastructure.subtitles import SrtRenderer
         return DubPipeline(
             translator=self.translators.create(request.translator, request),
@@ -99,6 +100,7 @@ class DubFactory:
             if request.verify_attempts or request.reference_candidates > 1 else None,
             speaker_encoder=self.speaker_encoder(request.device)
             if request.reference_candidates > 1 else None,
+            prosody=NumpyProsodyAnalyzer(),
         )
 
     def cloner(self, request: DubRequest) -> VoiceCloner:
@@ -152,8 +154,14 @@ def default_dub_factory(asr_registry: ModelRegistry) -> DubFactory:
             )
             model = factory.memo.get(("omnivoice", request.device),
                                      lambda: OmniVoiceModel(request.device))
-            return OmniVoiceCloner(model, OmniVoiceSettings(num_step=request.num_step,
-                                                            split_cfg=split_cfg))
+            return OmniVoiceCloner(model, OmniVoiceSettings(
+                num_step=request.num_step,
+                split_cfg=split_cfg,
+                text_guidance=request.text_guidance,
+                reference_guidance=request.reference_guidance,
+                accent_guidance_beta=request.accent_guidance,
+                accent_proxy_dir=request.accent_proxy_dir,
+            ))
         return build
 
     factory.cloners.register("omnivoice", omnivoice(True),
@@ -175,8 +183,9 @@ def default_dub_factory(asr_registry: ModelRegistry) -> DubFactory:
     def nllb(size: str) -> Callable[[DubRequest], Translator]:
         def build(request: DubRequest) -> Translator:
             from subdub_titler.infrastructure.nllb import NLLB_MODELS, NllbTranslator
-            return factory.memo.get((size, request.device), lambda: NllbTranslator(
-                NLLB_MODELS[size], request.device))
+            length_penalty = 0.8 if request.concise_translation else 1.0
+            return factory.memo.get((size, request.device, length_penalty), lambda: NllbTranslator(
+                NLLB_MODELS[size], request.device, length_penalty=length_penalty))
         return build
 
     factory.translators.register("nllb-600m", nllb("nllb-600m"),

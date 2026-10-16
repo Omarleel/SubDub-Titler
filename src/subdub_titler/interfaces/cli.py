@@ -2,8 +2,8 @@
 import json
 import os
 import shutil
-import subprocess
 import statistics
+import subprocess
 import sys
 import time
 from dataclasses import asdict
@@ -261,6 +261,22 @@ def dub(
                                                  help="Reintentos por inteligibilidad")] = 1,
     reference_candidates: Annotated[int, typer.Option(min=1, max=8,
                                                       help="Referencias sondeadas")] = 1,
+    text_guidance: Annotated[float | None, typer.Option(
+        help="CFG dual: peso de texto (at)")] = None,
+    reference_guidance: Annotated[float | None, typer.Option(
+        help="CFG dual: peso de referencia (as)")] = None,
+    accent_guidance: Annotated[float, typer.Option(
+        help="AAG: peso de analogía de acento (beta; 0 = desactivado)")] = 0.0,
+    accent_proxy_dir: Annotated[Path | None, typer.Option(
+        help="Carpeta con conjunto de proxies AAG guardados")] = None,
+    speed_penalty: Annotated[float, typer.Option(
+        help="Penalización por habla acelerada al elegir traducción")] = 0.5,
+    concise_translation: Annotated[bool, typer.Option(
+        help="Favorecer traducciones más compactas que eviten aceleración")] = False,
+    per_phrase_reference: Annotated[bool, typer.Option(
+        help="Usar fragmento de cada frase como referencia auxiliar de expresividad")] = False,
+    prosody_transfer: Annotated[bool, typer.Option(
+        help="Transferir contorno de energía y dinámica de la voz original")] = False,
     workdir: Annotated[Path | None, typer.Option(help="Carpeta de artefactos")] = None,
     profile: Annotated[Path | None, typer.Option(help="Reporte JSON de spans")] = None,
 ) -> None:
@@ -273,6 +289,10 @@ def dub(
             tts_batch=tts_batch, n_best=n_best, evaluate=evaluate_quality, diarize=diarize,
             max_speakers=max_speakers, merge_fragments=merge, verify_attempts=verify_attempts,
             reference_candidates=reference_candidates,
+            text_guidance=text_guidance, reference_guidance=reference_guidance,
+            accent_guidance=accent_guidance, accent_proxy_dir=accent_proxy_dir,
+            speed_penalty=speed_penalty, concise_translation=concise_translation,
+            per_phrase_reference=per_phrase_reference, prosody_transfer=prosody_transfer,
         )
         if not request.source.is_file():
             raise FileNotFoundError(f"Archivo no encontrado: {input}")
@@ -310,6 +330,18 @@ def dub_bench(
     merge: Annotated[str, typer.Option(help="Lista: true,false")] = "true",
     verify_attempts: Annotated[str, typer.Option(help="Lista, p. ej. 0,1,2")] = "1",
     reference_candidates: Annotated[str, typer.Option(help="Lista, p. ej. 1,4")] = "1",
+    text_guidance: Annotated[str | None, typer.Option(
+        help="Lista de pesos de texto (at), p. ej. 3.0,5.0")] = None,
+    reference_guidance: Annotated[str | None, typer.Option(
+        help="Lista de pesos de referencia (as), p. ej. 2.0,3.0")] = None,
+    accent_guidance: Annotated[str | None, typer.Option(
+        help="Lista de pesos AAG (beta), p. ej. 0.0,2.0,5.0")] = None,
+    accent_proxy_dir: Annotated[Path | None, typer.Option(
+        help="Carpeta con proxies AAG guardados")] = None,
+    speed_penalty: Annotated[str, typer.Option(help="Lista: 0.0,0.5")] = "0.5",
+    concise_translation: Annotated[str, typer.Option(help="Lista: false,true")] = "false",
+    per_phrase_reference: Annotated[str, typer.Option(help="Lista: false,true")] = "false",
+    prosody_transfer: Annotated[str, typer.Option(help="Lista: false,true")] = "false",
     workdir: Annotated[Path, typer.Option()] = Path("reports/dub-bench"),
     output: Annotated[Path, typer.Option()] = Path("reports/dub-bench.json"),
 ) -> None:
@@ -319,12 +351,24 @@ def dub_bench(
     from subdub_titler.application.dub_bench import DubBenchmark, rows_to_dict
     base = DubRequest(source=input.resolve(), target_language=to,
                       source_language=source_language, asr_model_id=model, evaluate=True)
+    tg_values = _values(text_guidance, float) if text_guidance else [None]
+    rg_values = _values(reference_guidance, float) if reference_guidance else [None]
+    ag_values = _values(accent_guidance, float) if accent_guidance else [0.0]
+    sp_values = _values(speed_penalty, float)
+    ct_values = _values(concise_translation, lambda x: x.lower() == "true")
+    ppr_values = _values(per_phrase_reference, lambda x: x.lower() == "true")
+    pt_values = _values(prosody_transfer, lambda x: x.lower() == "true")
     variants = [dict(tts_engine=e, translator=t, num_step=n, tts_batch=b, merge_fragments=m,
-                     verify_attempts=v, reference_candidates=r)
-                for e, t, n, b, m, v, r in product(
+                     verify_attempts=v, reference_candidates=r,
+                     text_guidance=tg, reference_guidance=rg,
+                     accent_guidance=ag, accent_proxy_dir=accent_proxy_dir,
+                     speed_penalty=sp, concise_translation=ct,
+                     per_phrase_reference=ppr, prosody_transfer=pt)
+                for e, t, n, b, m, v, r, tg, rg, ag, sp, ct, ppr, pt in product(
                     _values(tts), _values(translator), _values(num_step, int),
                     _values(tts_batch, int), _values(merge, lambda x: x.lower() == "true"),
-                    _values(verify_attempts, int), _values(reference_candidates, int))]
+                    _values(verify_attempts, int), _values(reference_candidates, int),
+                    tg_values, rg_values, ag_values, sp_values, ct_values, ppr_values, pt_values)]
     from subdub_titler.infrastructure.dub_factory import AsrTranscripts, default_dub_factory
     registry = default_registry()
     transcript = AsrTranscripts(registry)(base, SpanProfiler())
@@ -372,6 +416,14 @@ def tts_eval(
     num_step: Annotated[int, typer.Option(min=1, max=64)] = 16,
     tts_batch: Annotated[int, typer.Option(min=1, max=64)] = 8,
     device: Annotated[str, typer.Option()] = "cuda",
+    text_guidance: Annotated[float | None, typer.Option(
+        help="CFG dual: peso de texto (at)")] = None,
+    reference_guidance: Annotated[float | None, typer.Option(
+        help="CFG dual: peso de referencia (as)")] = None,
+    accent_guidance: Annotated[float, typer.Option(
+        help="AAG: peso de analogía de acento (beta)")] = 0.0,
+    accent_proxy_dir: Annotated[Path | None, typer.Option(
+        help="Carpeta con proxies AAG guardados")] = None,
     baseline: Annotated[Path | None, typer.Option(help="Informe previo para comparar")] = None,
     output: Annotated[Path, typer.Option()] = Path("reports/tts-eval.json"),
 ) -> None:
@@ -399,7 +451,9 @@ def tts_eval(
         items = [TtsItem(**row) for row in read_jsonl(manifest)]
     request = DubRequest(source=(manifest or from_report).resolve(),
                          target_language=items[0].language, tts_engine=tts, num_step=num_step,
-                         tts_batch=tts_batch, device=device, evaluate=True)
+                         tts_batch=tts_batch, device=device, evaluate=True,
+                         text_guidance=text_guidance, reference_guidance=reference_guidance,
+                         accent_guidance=accent_guidance, accent_proxy_dir=accent_proxy_dir)
     factory = default_dub_factory(default_registry())
     evaluation = TtsCorpusEvaluation(factory.cloner(request), FfmpegAudioStore(),
                                      factory.evaluator(request), tts_batch)
@@ -407,7 +461,10 @@ def tts_eval(
     found = regressions(result["summary"], json.loads(baseline.read_text(
         encoding="utf-8"))["summary"]) if baseline else None
     result |= {"schema_version": 1, "settings": {"tts": tts, "num_step": num_step,
-                                                 "tts_batch": tts_batch},
+                                                 "tts_batch": tts_batch,
+                                                 "text_guidance": text_guidance,
+                                                 "reference_guidance": reference_guidance,
+                                                 "accent_guidance": accent_guidance},
                "regressions": found}
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -485,14 +542,21 @@ def translate_eval(
 def ui(
     host: Annotated[str, typer.Option()] = "127.0.0.1",
     port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
+    max_upload_gb: Annotated[float, typer.Option(
+        help="Límite máximo de subida en GiB para videos o audios (0 para ilimitado).")] = 10.0,
 ) -> None:
     """API + UI compilada. Durante desarrollo ejecutar npm run dev en apps/web."""
     if host not in ("127.0.0.1", "localhost"):
         console.print("[red]Por seguridad sólo se permite loopback en esta versión.[/red]")
         raise typer.Exit(1)
+    os.environ["SUBDUB_MAX_UPLOAD_GB"] = str(max_upload_gb)
     import uvicorn
     console.print(f"API: http://127.0.0.1:{port}/docs")
     console.print("UI: compilar primero con cd apps/web && npm run build")
+    if max_upload_gb > 0:
+        console.print(f"Límite de carga: {max_upload_gb:.1f} GiB (--max-upload-gb)")
+    else:
+        console.print("Límite de carga: sin límite")
     # Sin límite, Ctrl+C se queda en «Shutting down» mientras el reproductor tenga abierta una
     # descarga del video (FileResponse con Range): uvicorn espera a que el navegador la cierre.
     uvicorn.run("subdub_titler.interfaces.api:create_app", host="127.0.0.1", port=port,

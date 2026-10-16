@@ -1,4 +1,5 @@
 import pytest
+
 from subdub_titler.domain.models import Segment, Transcript
 from subdub_titler.infrastructure.subtitles import SrtRenderer, VttRenderer, timestamp
 

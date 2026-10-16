@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from .dubbing import Ambience, AudioClip, Candidate
-from .models import ModelDescriptor, Transcript, TranscriptionRequest
+from .dubbing import Ambience, AudioClip, Candidate, ProsodyProfile
+from .models import ModelDescriptor, Transcript, TranscriptionRequest, Word
 
 
 class ASREngine(Protocol):
@@ -82,6 +82,14 @@ class SourceSeparator(Protocol):
     def separate(self, source: Path, workdir: Path) -> Stems: ...
 
 
+@dataclass(frozen=True, slots=True)
+class AudioQuality:
+    clipping_ratio: float
+    is_saturated: bool
+    rms: float
+    is_too_quiet: bool
+
+
 class AudioStore(Protocol):
     def load(self, path: Path, sample_rate: int, start: float | None = None,
              end: float | None = None) -> AudioClip: ...
@@ -89,6 +97,17 @@ class AudioStore(Protocol):
     def save(self, clip: AudioClip, path: Path) -> Path: ...
 
     def duration(self, path: Path) -> float: ...
+
+    def check_audio_quality(self, clip: AudioClip) -> AudioQuality: ...
+
+
+class ProsodyAnalyzer(Protocol):
+    """Extracción y transferencia de prosodia y expresividad de la voz original."""
+
+    def analyze(self, clip: AudioClip, words: Sequence[Word] = ()) -> ProsodyProfile: ...
+
+    def transfer_energy(self, clip: AudioClip, target: ProsodyProfile,
+                        max_boost_db: float = 4.0) -> AudioClip: ...
 
 
 @dataclass(frozen=True, slots=True)

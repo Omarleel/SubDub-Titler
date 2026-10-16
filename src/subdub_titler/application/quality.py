@@ -4,10 +4,10 @@ Cálculo exacto de sustituciones, eliminaciones e inserciones mediante distancia
 Levenshtein con dos filas. Memoria O(len(predicción)); tiempo O(N*M): evaluar
 fragmentos/datasets controlados, no documentos gigantes sin segmentación.
 """
-from collections import Counter
-from dataclasses import asdict, dataclass
 import re
 import unicodedata
+from collections import Counter
+from dataclasses import asdict, dataclass
 
 
 @dataclass(frozen=True, slots=True)

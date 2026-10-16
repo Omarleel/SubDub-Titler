@@ -130,6 +130,10 @@ class FfmpegAudioStore:
         import soundfile
         return soundfile.info(str(path)).duration
 
+    def check_audio_quality(self, clip: AudioClip):
+        from subdub_titler.infrastructure.voice_level import check_reference_audio
+        return check_reference_audio(clip.samples, clip.sample_rate)
+
 
 def _ebur128(args: list[str], peak: bool, stdin: bytes | None = None) -> str:
     filters = "ebur128=peak=true" if peak else "ebur128"

@@ -226,12 +226,15 @@ class TimingPolicy:
     fill_slot: bool = False  # True: estirar hasta min_speed para llenar la ranura
     tolerance_s: float = 0.12
     tolerance_ratio: float = 0.05
+    speed_penalty: float = 0.5  # penalización por exceso de velocidad al desempatar candidatos
 
     def __post_init__(self) -> None:
         if not 0 < self.min_speed <= 1 <= self.max_speed:
             raise ValueError("Se requiere 0 < min_speed <= 1 <= max_speed")
         if min(self.max_borrow, self.max_advance, self.min_gap) < 0:
             raise ValueError("max_borrow, max_advance y min_gap no pueden ser negativos")
+        if self.speed_penalty < 0:
+            raise ValueError("speed_penalty no puede ser negativo")
 
 
 DEFAULT_TIMING = TimingPolicy()
@@ -321,13 +324,22 @@ class Candidate:
 def choose_candidate(candidates: Sequence[Candidate], natural_seconds: Sequence[float],
                      slot_seconds: float, policy: TimingPolicy = DEFAULT_TIMING) -> int:
     """Índice de la traducción elegida: la mejor puntuada que cabe sin superar `max_speed`;
-    si ninguna cabe, la que exige menor velocidad (normalmente la más corta)."""
+    si ninguna cabe, la que exige menor velocidad (normalmente la más corta).
+    Con `speed_penalty > 0`, penaliza candidatos acelerados frente a los de ritmo natural.
+    """
     if not candidates or len(candidates) != len(natural_seconds):
         raise ValueError("Candidatos y duraciones deben coincidir y no estar vacíos")
+    fitting = [i for i in range(len(candidates))
+               if natural_seconds[i] / slot_seconds <= policy.max_speed]
+    if fitting:
+        if policy.speed_penalty > 0.0:
+            def score(i: int) -> float:
+                speed = natural_seconds[i] / slot_seconds
+                excess_speed = max(0.0, speed - 1.0)
+                return candidates[i].score - policy.speed_penalty * excess_speed
+            return max(fitting, key=score)
+        return min(fitting, key=lambda i: -candidates[i].score)
     order = sorted(range(len(candidates)), key=lambda i: -candidates[i].score)
-    for i in order:
-        if natural_seconds[i] / slot_seconds <= policy.max_speed:
-            return i
     return min(order, key=lambda i: natural_seconds[i])
 
 
@@ -340,6 +352,10 @@ class ReferenceSpan:
     @property
     def duration(self) -> float:
         return self.end - self.start
+
+    @property
+    def speech_rate(self) -> float:
+        return _spoken_units(self.text) / self.duration if self.duration > 0 else 0.0
 
 
 SENTENCE_END = (".", "?", "!", "。", "？", "！", "…")
@@ -364,6 +380,18 @@ def estimate_seconds_by_rate(text: str, reference_text: str, reference_seconds: 
     return max(0.3, _spoken_units(text) / rate)
 
 
+def reference_quality_score(duration: float, text: str, optimal_duration: float = 6.0,
+                            target_speech_rate: float = 14.0) -> float:
+    """Puntuación de idoneidad como referencia de voz.
+    Penaliza clips con ritmo anormalmente lento (< 8 unidades/s) o rápido (> 24)
+    y duraciones muy alejadas de la zona óptima de OmniVoice (4.5–7.5 s).
+    """
+    rate = _spoken_units(text) / duration if duration > 0 else 0.0
+    rate_penalty = max(0.0, 8.0 - rate) * 0.4 + max(0.0, rate - 24.0) * 0.2
+    dur_penalty = abs(duration - optimal_duration) * 0.1
+    return min(duration, optimal_duration) - dur_penalty - rate_penalty
+
+
 def reference_candidates(cues: Sequence[DubCue], min_seconds: float = 3.0,
                          max_seconds: float = 10.0, max_pause: float = 1.0,
                          clean_gap: float = 0.25, margin: float = 0.2,
@@ -371,10 +399,10 @@ def reference_candidates(cues: Sequence[DubCue], min_seconds: float = 3.0,
     """Fragmentos de voz para clonar (OmniVoice recomienda 3–10 s), mejores primero.
 
     Preferencia: cues contiguos que empiezan y terminan en frontera de frase (texto acabado en
-    puntuación y silencio de al menos `clean_gap` alrededor); entre ellos, los más largos. Una
-    referencia cortada a media frase hace que el modelo la continúe en la voz generada.
-    Con `speaker`, el fragmento solo contiene cues de ese hablante (nunca cruza la voz de
-    otro). Los candidatos no se solapan. El intervalo se amplía hasta `margin` en el silencio.
+    puntuación y silencio de al menos `clean_gap` alrededor); entre ellos, los que tienen ritmo
+    natural y duración adecuada. Una referencia cortada a media frase hace que el modelo la
+    continúe en la voz generada. Con `speaker`, el fragmento solo contiene cues de ese hablante.
+    Los candidatos no se solapan. El intervalo se amplía hasta `margin` en el silencio.
     """
     if not any(speaker is None or c.speaker == speaker for c in cues):
         raise ValueError("No hay voz para tomar como referencia")
@@ -404,7 +432,9 @@ def reference_candidates(cues: Sequence[DubCue], min_seconds: float = 3.0,
             if duration > max_seconds:
                 break
             if duration >= min_seconds:
-                options.append((clean(first, last), duration, first, last))
+                span_text = " ".join(cues[i].source_text for i in range(first, last + 1))
+                score = reference_quality_score(duration, span_text)
+                options.append((clean(first, last), score, first, last))
     options.sort(key=lambda o: (o[0], o[1]), reverse=True)
     chosen: list[tuple[int, int]] = []
     for _, _, first, last in options:
@@ -442,6 +472,18 @@ def speakers_by_presence(cues: Sequence[DubCue]) -> list[str]:
 
 
 @dataclass(frozen=True, slots=True)
+class ProsodyProfile:
+    """Perfil prosódico extraído de un segmento de habla original."""
+    speech_rate: float  # unidades o caracteres hablados por segundo
+    energy_rms: float  # nivel RMS promedio [0.0, 1.0]
+    dynamic_range_db: float  # diferencia dB entre picos sonoros y base
+    leading_pause: float  # silencio previo en segundos
+    trailing_pause: float  # silencio posterior en segundos
+    pitch_mean_hz: float | None = None  # frecuencia fundamental media estimada (Hz)
+    pitch_std_hz: float | None = None  # desviación estándar tonal (expresividad)
+
+
+@dataclass(frozen=True, slots=True)
 class DubbedCue:
     index: int
     start: float
@@ -465,6 +507,10 @@ class DubbedCue:
     def end(self) -> float:
         return self.start + self.generated_seconds
 
+    @property
+    def is_rushed(self) -> bool:
+        return self.speed > 1.15 or self.action is FitAction.SHORTEN
+
 
 @dataclass(frozen=True, slots=True)
 class SyncReport:
@@ -477,6 +523,7 @@ class SyncReport:
     speed_min: float
     speed_max: float
     shortened: int  # cues que no cupieron ni a velocidad máxima
+    rushed: int = 0  # cues con velocidad excesiva (> 1.15) o que requirieron recorte
 
 
 def sync_metrics(track: Sequence[DubbedCue],
@@ -493,6 +540,7 @@ def sync_metrics(track: Sequence[DubbedCue],
                    if a.end > b.start + 1e-3)
     speeds = [c.speed for c in track]
     in_range = sum(1 for s in speeds if policy.min_speed - 1e-9 <= s <= policy.max_speed + 1e-9)
+    rushed = sum(1 for c in track if c.speed > 1.15 or c.action is FitAction.SHORTEN)
     return SyncReport(
         cues=len(track), within_tolerance=within / len(track),
         max_abs_error_ms=round(max(errors) * 1000, 1),
@@ -500,6 +548,7 @@ def sync_metrics(track: Sequence[DubbedCue],
         overlaps=overlaps, speed_in_range=in_range / len(track),
         speed_min=round(min(speeds), 3), speed_max=round(max(speeds), 3),
         shortened=sum(1 for c in track if c.action is FitAction.SHORTEN),
+        rushed=rushed,
     )
 
 
@@ -526,6 +575,19 @@ class DubRequest:
     # Referencias sondeadas por hablante (1 = la mejor por regla). Medido en el video de prueba:
     # el sondeo eligió la misma que la regla (+42 s sin mejora); queda como opción.
     reference_candidates: int = 1
+    # CFG dual (Cho & Lee, 2026): at (texto) y as (referencia).
+    # None = usar guidance_scale estándar (equivalente a at=as=1+guidance_scale, típicamente 3.0).
+    text_guidance: float | None = None
+    reference_guidance: float | None = None
+    # Accent Analogy Guidance (Cho & Lee, 2026): beta y carpeta de proxies
+    accent_guidance: float = 0.0
+    accent_proxy_dir: Path | None = None
+    # Adaptación de duración y traducción (Fase 6)
+    speed_penalty: float = 0.5  # peso de penalización por habla acelerada
+    concise_translation: bool = False  # generar traducciones más breves
+    # Expresividad y prosodia por frase (Fase 5)
+    per_phrase_reference: bool = False  # usar fragmento de cada frase como prompt auxiliar
+    prosody_transfer: bool = False  # transferir energía y dinámica original
 
     def __post_init__(self) -> None:
         if self.target_language not in DUB_LANGUAGES:
@@ -542,10 +604,24 @@ class DubRequest:
             raise ValueError("Dispositivo inválido")
         if not 1 <= self.max_speakers <= 16:
             raise ValueError("max_speakers debe estar entre 1 y 16")
+        if self.text_guidance is not None and not 0.0 <= self.text_guidance <= 20.0:
+            raise ValueError("text_guidance debe estar entre 0 y 20")
+        if self.reference_guidance is not None and not 0.0 <= self.reference_guidance <= 20.0:
+            raise ValueError("reference_guidance debe estar entre 0 y 20")
+        if not 0.0 <= self.accent_guidance <= 50.0:
+            raise ValueError("accent_guidance debe estar entre 0 y 50")
         if not 0 <= self.verify_attempts <= 5:
             raise ValueError("verify_attempts debe estar entre 0 y 5")
         if not 1 <= self.reference_candidates <= 8:
             raise ValueError("reference_candidates debe estar entre 1 y 8")
+        if not 0.0 <= self.speed_penalty <= 10.0:
+            raise ValueError("speed_penalty debe estar entre 0 y 10")
+        if not isinstance(self.concise_translation, bool):
+            raise ValueError("concise_translation debe ser booleano")
+        if not isinstance(self.per_phrase_reference, bool):
+            raise ValueError("per_phrase_reference debe ser booleano")
+        if not isinstance(self.prosody_transfer, bool):
+            raise ValueError("prosody_transfer debe ser booleano")
 
 
 @dataclass(frozen=True, slots=True)

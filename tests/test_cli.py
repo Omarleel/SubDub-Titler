@@ -1,4 +1,5 @@
 from typer.testing import CliRunner
+
 from subdub_titler.interfaces.cli import app
 
 

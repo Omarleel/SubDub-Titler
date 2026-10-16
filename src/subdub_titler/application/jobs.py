@@ -130,7 +130,15 @@ def dub_request(job: dict) -> DubRequest:
         max_speakers=params.get("max_speakers", 4),
         merge_fragments=params.get("merge_fragments", True),
         verify_attempts=params.get("verify_attempts", 1),
-        reference_candidates=params.get("reference_candidates", 1),
+        text_guidance=params.get("text_guidance"),
+        reference_guidance=params.get("reference_guidance"),
+        accent_guidance=params.get("accent_guidance", 0.0),
+        accent_proxy_dir=(Path(params["accent_proxy_dir"])
+                          if params.get("accent_proxy_dir") else None),
+        speed_penalty=params.get("speed_penalty", 0.5),
+        concise_translation=params.get("concise_translation", False),
+        per_phrase_reference=params.get("per_phrase_reference", False),
+        prosody_transfer=params.get("prosody_transfer", False),
     )
 
 

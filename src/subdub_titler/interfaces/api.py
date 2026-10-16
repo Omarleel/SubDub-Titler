@@ -30,7 +30,28 @@ from subdub_titler.infrastructure.storage import SqliteJobs
 from subdub_titler.infrastructure.subtitles import VttRenderer
 
 logger = logging.getLogger(__name__)
-MAX_UPLOAD_BYTES = 2 * 1024**3
+
+
+def max_upload_bytes() -> int | None:
+    raw_gb = os.environ.get("SUBDUB_MAX_UPLOAD_GB")
+    if raw_gb is not None:
+        try:
+            val = float(raw_gb)
+            return int(val * 1024**3) if val > 0 else None
+        except ValueError:
+            pass
+    raw_bytes = os.environ.get("SUBDUB_MAX_UPLOAD_BYTES")
+    if raw_bytes is not None:
+        try:
+            val_b = int(raw_bytes)
+            return val_b if val_b > 0 else None
+        except ValueError:
+            pass
+    return 10 * 1024**3  # Por defecto 10 GiB para admitir videos locales de alta resolución
+
+
+MAX_UPLOAD_BYTES = max_upload_bytes() or 10 * 1024**3
+
 # Explícitos: el registro de Windows no es fiable para tipos MIME.
 MEDIA_TYPES = {
     ".mp3": "audio/mpeg", ".wav": "audio/wav", ".flac": "audio/flac", ".aac": "audio/aac",
@@ -54,6 +75,14 @@ class DubJobRequest(BaseModel):
     merge_fragments: bool = True
     verify_attempts: int = Field(1, ge=0, le=5)
     reference_candidates: int = Field(1, ge=1, le=8)
+    text_guidance: float | None = Field(None, ge=0.0, le=20.0)
+    reference_guidance: float | None = Field(None, ge=0.0, le=20.0)
+    accent_guidance: float = Field(0.0, ge=0.0, le=50.0)
+    accent_proxy_dir: str | None = None
+    speed_penalty: float = Field(0.5, ge=0.0, le=10.0)
+    concise_translation: bool = False
+    per_phrase_reference: bool = False
+    prosody_transfer: bool = False
 
 
 class CueEdit(BaseModel):
@@ -149,12 +178,15 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
         destination = uploads / f"{uuid4().hex}{suffix}"
         length = 0
         persisted = False
+        limit = max_upload_bytes()
         try:
             with destination.open("wb") as target:
                 while chunk := await file.read(1024 * 1024):
                     length += len(chunk)
-                    if length > MAX_UPLOAD_BYTES:
-                        raise HTTPException(413, "Archivo excede 2 GiB")
+                    if limit is not None and length > limit:
+                        limit_gib = limit / (1024**3)
+                        raise HTTPException(
+                            413, f"Archivo excede el límite permitido ({limit_gib:.1f} GiB)")
                     target.write(chunk)
             if not length:
                 raise HTTPException(422, "Archivo vacío")

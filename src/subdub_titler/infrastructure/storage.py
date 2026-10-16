@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """Adaptador SQLite. Las conexiones son por operación (seguro entre threads)."""
 import json
 import sqlite3

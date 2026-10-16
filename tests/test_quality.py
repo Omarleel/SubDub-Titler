@@ -1,4 +1,5 @@
 import pytest
+
 from subdub_titler.application.quality import evaluate
 
 

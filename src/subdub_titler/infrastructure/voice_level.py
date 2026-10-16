@@ -38,6 +38,27 @@ def tame_bursts(samples, sample_rate: int, headroom_db: float = 8.0, frame: floa
     return (samples * gain).astype(np.float32)
 
 
+def check_reference_audio(samples, sample_rate: int = 16_000):
+    """Inspecciona la calidad acústica de un fragmento de referencia.
+    Detecta saturación/clipping (|x| >= 0.99), nivel RMS y si es inaudible (< 0.01).
+    """
+    import numpy as np
+
+    from subdub_titler.domain.ports import AudioQuality
+
+    samples = np.asarray(samples, dtype=np.float32)
+    if len(samples) == 0:
+        return AudioQuality(clipping_ratio=0.0, is_saturated=False, rms=0.0, is_too_quiet=True)
+    clipping_ratio = float((np.abs(samples) >= 0.99).mean())
+    rms = float(np.sqrt(np.mean(samples ** 2)))
+    return AudioQuality(
+        clipping_ratio=round(clipping_ratio, 5),
+        is_saturated=clipping_ratio > 0.001,
+        rms=round(rms, 4),
+        is_too_quiet=rms < 0.01,
+    )
+
+
 class BurstGuard:
     """`VoiceCloner` que delega en otro y atenúa las ráfagas de cada frase generada."""
 

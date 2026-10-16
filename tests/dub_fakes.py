@@ -56,6 +56,10 @@ class FakeAudioStore:
     def duration(self, path):
         return 20.0
 
+    def check_audio_quality(self, clip):
+        from subdub_titler.domain.ports import AudioQuality
+        return AudioQuality(clipping_ratio=0.0, is_saturated=False, rms=0.1, is_too_quiet=False)
+
 
 class FakeMixer:
     def __init__(self) -> None:
@@ -120,6 +124,15 @@ class FixedLeak:
         return 0.5
 
 
+class FakeProsody:
+    def analyze(self, clip, words=()):
+        from subdub_titler.domain.dubbing import ProsodyProfile
+        return ProsodyProfile(14.0, 0.1, 10.0, 0.0, 0.0, 150.0, 20.0)
+
+    def transfer_energy(self, clip, target, max_boost_db=4.0):
+        return clip
+
+
 class FakeFactory:
     def __init__(self) -> None:
         self.cloner = FakeCloner()
@@ -140,7 +153,8 @@ class FakeFactory:
                            audio=FakeAudioStore(), mixer=self.mixer, subtitles=SrtRenderer(),
                            muxer=FakeMuxer(),
                            separator=FakeSeparator() if request.separator else None,
-                           evaluator=evaluator)
+                           evaluator=evaluator,
+                           prosody=FakeProsody())
 
 
 def transcript() -> Transcript:

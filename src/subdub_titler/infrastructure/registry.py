@@ -4,7 +4,6 @@ from collections.abc import Callable
 from subdub_titler.domain.models import ModelDescriptor, TranscriptionRequest
 from subdub_titler.domain.ports import ASREngine, Releasable
 
-
 # Presets verificados como nombres del catálogo de faster-whisper.
 PRESETS = (
     ModelDescriptor("tiny", "faster-whisper", description="Pruebas rápidas"),

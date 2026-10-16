@@ -81,7 +81,10 @@ class LocalJobWorker:
 def transcript_from_dict(data: dict) -> Transcript:
     return Transcript(
         tuple(Segment(s["start"], s["end"], s["text"],
-                      tuple(Word(**w) for w in s.get("words") or ()))
+                      tuple(Word(**w) for w in s.get("words") or ()),
+                      speaker=s.get("speaker"),
+                      avg_logprob=s.get("avg_logprob"),
+                      no_speech_prob=s.get("no_speech_prob"))
               for s in data["segments"]),
         data["language"], data["model_id"], data.get("duration_seconds"),
     )
@@ -104,6 +107,12 @@ class TranscribeJobHandler:
             no_speech_threshold=params.get("no_speech_threshold", 0.40),
             normalize_loudness=params.get("normalize_loudness", False),
             isolate_dialogue=params.get("isolate_dialogue", False),
+            forced_alignment=params.get("forced_alignment", False),
+            diarize=params.get("diarize", False),
+            max_speakers=params.get("max_speakers", 4),
+            conform_netflix=params.get("conform_netflix", False),
+            suppress_hallucinations=params.get("suppress_hallucinations", True),
+            adaptive_two_pass=params.get("adaptive_two_pass", False),
         )
         profiler = SpanProfiler()
         result = self.use_case.execute(request, profiler)

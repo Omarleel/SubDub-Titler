@@ -115,10 +115,17 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
         from subdub_titler.infrastructure.dub_factory import AsrTranscripts, default_dub_factory
         dub_factory = default_dub_factory(registry)
         transcripts = transcripts or AsrTranscripts(registry)
+    from subdub_titler.infrastructure.ctc_aligner import LazyMmsForcedAligner
     from subdub_titler.infrastructure.demucs_separator import LazyDemucsSeparator
+    from subdub_titler.infrastructure.diarization import LazySpeakerDiarizer
     dub_use_case = DubUseCase(transcripts, dub_factory)
     dub_handler = DubJobHandler(dub_use_case, jobs, output_dir)
-    transcribe_use_case = TranscribeUseCase(registry, separator=LazyDemucsSeparator())
+    transcribe_use_case = TranscribeUseCase(
+        registry,
+        separator=LazyDemucsSeparator(),
+        aligner=LazyMmsForcedAligner(),
+        diarizer=LazySpeakerDiarizer(),
+    )
     worker = LocalJobWorker(jobs, {
         "transcribe": TranscribeJobHandler(transcribe_use_case, output_dir),
         "dub": dub_handler,
@@ -170,6 +177,12 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
         no_speech_threshold: Annotated[float, Form(ge=0.0, le=1.0)] = 0.40,
         normalize_loudness: Annotated[bool, Form()] = False,
         isolate_dialogue: Annotated[bool, Form()] = False,
+        forced_alignment: Annotated[bool, Form()] = False,
+        diarize: Annotated[bool, Form()] = False,
+        max_speakers: Annotated[int, Form(ge=1, le=20)] = 4,
+        conform_netflix: Annotated[bool, Form()] = False,
+        suppress_hallucinations: Annotated[bool, Form()] = True,
+        adaptive_two_pass: Annotated[bool, Form()] = False,
     ) -> dict:
         if model_id not in {m.id for m in registry.list_models()}:
             raise HTTPException(422, "Modelo no registrado")
@@ -211,6 +224,17 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
                 job_params["normalize_loudness"] = True
             if isolate_dialogue:
                 job_params["isolate_dialogue"] = True
+            if forced_alignment:
+                job_params["forced_alignment"] = True
+            if diarize:
+                job_params["diarize"] = True
+                job_params["max_speakers"] = max_speakers
+            if conform_netflix:
+                job_params["conform_netflix"] = True
+            if not suppress_hallucinations:
+                job_params["suppress_hallucinations"] = False
+            if adaptive_two_pass:
+                job_params["adaptive_two_pass"] = True
             job = jobs.create(destination, original_name, model_id, language, device,
                               compute_type, params=job_params)
             persisted = True

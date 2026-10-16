@@ -8,7 +8,7 @@ Los clips cortos dan embeddings poco fiables: forman los grupos solo los de al m
 from collections.abc import Sequence
 from pathlib import Path
 
-from subdub_titler.domain.ports import AudioStore
+from subdub_titler.domain.ports import AudioStore, Releasable, SpeakerDiarizer
 from subdub_titler.infrastructure.dub_eval import EVAL_RATE, WavLmSpeakerEncoder
 
 
@@ -78,3 +78,33 @@ class EmbeddingDiarizer:
                 nearest = max(big, key=lambda b: float(centroids[k] @ centroids[b]))
                 groups[nearest].append(k)
         return list(groups.values())
+
+
+class LazySpeakerDiarizer(SpeakerDiarizer, Releasable):
+    """Proxy diferido para EmbeddingDiarizer: no importa PyTorch ni modelos hasta su uso."""
+
+    def __init__(self, device: str = "cuda", threshold: float = 0.6,
+                 min_seconds: float = 1.0, min_share: float = 0.05) -> None:
+        self.device = device
+        self.threshold = threshold
+        self.min_seconds = min_seconds
+        self.min_share = min_share
+        self._diarizer: EmbeddingDiarizer | None = None
+
+    def assign(self, source: Path, spans: Sequence[tuple[float, float]],
+               max_speakers: int) -> list[str]:
+        if self._diarizer is None:
+            from subdub_titler.infrastructure.media import FfmpegAudioStore
+            self._diarizer = EmbeddingDiarizer(
+                WavLmSpeakerEncoder(self.device),
+                FfmpegAudioStore(),
+                threshold=self.threshold,
+                min_seconds=self.min_seconds,
+                min_share=self.min_share,
+            )
+        return self._diarizer.assign(source, spans, max_speakers=max_speakers)
+
+    def release(self) -> None:
+        if self._diarizer is not None:
+            self._diarizer.release()
+            self._diarizer = None

@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from contextlib import nullcontext
 
 from subdub_titler.domain.dubbing import AudioClip
+from subdub_titler.domain.hallucinations import extract_dynamic_prompt, is_hallucination_segment
 from subdub_titler.domain.models import Segment, Transcript, TranscriptionRequest, Word
 from subdub_titler.infrastructure.audio import SAMPLING_RATE, decode, tune_vad_threads
 from subdub_titler.infrastructure.gpu_runtime import ensure_cuda_libraries
@@ -138,6 +139,17 @@ class FasterWhisperAdapter:
                 text = s.text.strip()
                 if not text:
                     continue
+                avg_logprob = getattr(s, "avg_logprob", None)
+                no_speech_prob = getattr(s, "no_speech_prob", None)
+                compression_ratio = getattr(s, "compression_ratio", None)
+
+                # Supresión activa de alucinaciones (bucles de repetición y frases fantasma)
+                if request.suppress_hallucinations and is_hallucination_segment(
+                    text, avg_logprob=avg_logprob, no_speech_prob=no_speech_prob,
+                    compression_ratio=compression_ratio,
+                ):
+                    continue
+
                 words = tuple(
                     Word(float(w.start), float(w.end), w.word) for w in (s.words or ())
                 )
@@ -146,7 +158,22 @@ class FasterWhisperAdapter:
                 if words:
                     end = max(end, words[-1].end + 0.12)
                 if end > start:
-                    result_segments.append(Segment(start, end, text, words))
+                    nsp_val = float(no_speech_prob) if no_speech_prob is not None else None
+                    result_segments.append(
+                        Segment(
+                            start, end, text, words,
+                            avg_logprob=float(avg_logprob) if avg_logprob is not None else None,
+                            no_speech_prob=nsp_val,
+                        )
+                    )
+
+            # Inferencia adaptativa en dos pasadas con Dynamic Prompting
+            if request.adaptive_two_pass and result_segments:
+                with profiler.measure("asr.adaptive_second_pass") if profiler else nullcontext():
+                    result_segments = self._adaptive_second_pass(
+                        audio, result_segments, info.language, request,
+                    )
+
             result_segments = tuple(result_segments)
         return Transcript(
             segments=result_segments,
@@ -154,3 +181,96 @@ class FasterWhisperAdapter:
             model_id=self.model_id,
             duration_seconds=float(info.duration) if info.duration else None,
         )
+
+    def _adaptive_second_pass(
+        self,
+        audio,
+        segments: list[Segment],
+        language: str | None,
+        request: TranscriptionRequest,
+    ) -> list[Segment]:
+        """Segunda pasada focalizada sobre segmentos de baja confianza con prompt dinámico."""
+        dynamic_prompt = extract_dynamic_prompt(segments)
+        if not dynamic_prompt:
+            return segments
+
+        prompt_str = f"Contexto y nombres propios clave: {dynamic_prompt}."
+        second_pass_beam = max(request.beam_size + 2, 7)
+        total_audio_len = len(audio) / SAMPLING_RATE
+        improved: list[Segment] = []
+
+        # Limitar a máx 15 segmentos para mantener tiempo de respuesta ultra-rápido
+        dudosos_count = 0
+        for s in segments:
+            is_doubtful = (
+                (s.avg_logprob is not None and s.avg_logprob < -0.65) or
+                (s.no_speech_prob is not None and s.no_speech_prob > 0.35)
+            )
+            if not is_doubtful or dudosos_count >= 15:
+                improved.append(s)
+                continue
+
+            dudosos_count += 1
+            c_start = max(0.0, s.start - 0.20)
+            c_end = min(total_audio_len, s.end + 0.20)
+            chunk = audio[int(c_start * SAMPLING_RATE):int(c_end * SAMPLING_RATE)]
+            if len(chunk) < int(0.15 * SAMPLING_RATE):
+                improved.append(s)
+                continue
+
+            try:
+                pass2_segs, _ = self._model.transcribe(
+                    chunk,
+                    language=language,
+                    beam_size=second_pass_beam,
+                    initial_prompt=prompt_str,
+                    condition_on_previous_text=False,
+                    word_timestamps=request.word_timestamps,
+                    vad_filter=False,
+                )
+                pass2_list = list(pass2_segs)
+                if not pass2_list:
+                    # La segunda pasada confirmó que era silencio/ruido; suprimir
+                    continue
+
+                valid_pass2: list[Segment] = []
+                for p in pass2_list:
+                    p_text = p.text.strip()
+                    if not p_text:
+                        continue
+                    p_logp = getattr(p, "avg_logprob", None)
+                    p_nsp = getattr(p, "no_speech_prob", None)
+                    p_ratio = getattr(p, "compression_ratio", None)
+                    if is_hallucination_segment(p_text, p_logp, p_nsp, p_ratio):
+                        continue
+                    p_words = tuple(
+                        Word(float(w.start) + c_start, float(w.end) + c_start, w.word)
+                        for w in (p.words or ())
+                    )
+                    p_st = float(p.start) + c_start
+                    p_en = float(p.end) + c_start
+                    if p_words:
+                        p_en = max(p_en, p_words[-1].end + 0.12)
+                    if p_en > p_st:
+                        valid_pass2.append(
+                            Segment(
+                                p_st, p_en, p_text, p_words,
+                                speaker=s.speaker,
+                                avg_logprob=float(p_logp) if p_logp is not None else None,
+                                no_speech_prob=float(p_nsp) if p_nsp is not None else None,
+                            )
+                        )
+
+                if not valid_pass2:
+                    continue
+
+                logps = [v.avg_logprob for v in valid_pass2 if v.avg_logprob is not None]
+                p2_avg_logp = sum(logps) / len(logps) if logps else None
+                if logps and (s.avg_logprob is None or p2_avg_logp > s.avg_logprob):
+                    improved.extend(valid_pass2)
+                else:
+                    improved.append(s)
+            except Exception:
+                improved.append(s)
+
+        return improved

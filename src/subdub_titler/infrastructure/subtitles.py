@@ -1,4 +1,4 @@
-from subdub_titler.domain.models import Transcript
+from subdub_titler.domain.models import Segment, Transcript
 
 
 def timestamp(seconds: float, separator: str = ",") -> str:
@@ -9,14 +9,24 @@ def timestamp(seconds: float, separator: str = ",") -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}{separator}{milli:03d}"
 
 
-def _clean(text: str) -> str:
-    return " ".join(text.strip().split())
+def _format_text(s: Segment) -> str:
+    lines = [" ".join(line.split()) for line in s.text.strip().split("\n")]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+    if not s.speaker:
+        return "\n".join(lines)
+    label = s.speaker
+    if label.startswith("S") and label[1:].isdigit():
+        label = f"Hablante {int(label[1:]) + 1}"
+    lines[0] = f"[{label}] {lines[0]}"
+    return "\n".join(lines)
 
 
 class SrtRenderer:
     def render(self, transcript: Transcript) -> str:
         return "\n".join(
-            f"{idx}\n{timestamp(s.start)} --> {timestamp(s.end)}\n{_clean(s.text)}\n"
+            f"{idx}\n{timestamp(s.start)} --> {timestamp(s.end)}\n{_format_text(s)}\n"
             for idx, s in enumerate(transcript.segments, start=1)
             if s.text.strip()
         )
@@ -25,6 +35,6 @@ class SrtRenderer:
 class VttRenderer:
     def render(self, transcript: Transcript) -> str:
         return "WEBVTT\n\n" + "\n".join(
-            f"{timestamp(s.start, '.')} --> {timestamp(s.end, '.')}\n{_clean(s.text)}\n"
+            f"{timestamp(s.start, '.')} --> {timestamp(s.end, '.')}\n{_format_text(s)}\n"
             for s in transcript.segments if s.text.strip()
         )

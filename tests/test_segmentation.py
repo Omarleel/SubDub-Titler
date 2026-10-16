@@ -102,3 +102,46 @@ def test_batch_size_bounds(tmp_path: Path):
         TranscriptionRequest(audio, vad_speech_pad_ms=-1)
     with pytest.raises(ValueError):
         TranscriptionRequest(audio, no_speech_threshold=1.5)
+
+
+def test_smart_line_break_preserves_short_text():
+    from subdub_titler.domain.segmentation import balance_line_breaks
+    short_text = "Esta es una frase corta."
+    assert balance_line_breaks(short_text, max_cpl=42) == short_text
+
+
+def test_smart_line_break_splits_long_text_within_bounds():
+    from subdub_titler.domain.segmentation import balance_line_breaks
+    long_text = "Okay, I know this is gonna sound a little crazy, but I thought maybe we could have"
+    broken = balance_line_breaks(long_text, max_cpl=42)
+    lines = broken.split("\n")
+    assert len(lines) == 2
+    assert all(len(line_text) <= 42 for line_text in lines)
+    assert " ".join(lines) == long_text
+
+
+def test_conform_timing_stretches_high_cps_if_gap_allows():
+    from subdub_titler.domain.segmentation import NETFLIX_POLICY, conform_timing_netflix
+    # Segmento con 33 caracteres que dura 0.8s -> CPS = 41.25 (> target 17.0)
+    # Siguiente segmento empieza a los 4.0s (hay silencio de 3.2s disponible)
+    seg1 = Segment(0.0, 0.8, "Texto de treinta y cuatro letras.")
+    seg2 = Segment(4.0, 5.0, "Siguiente frase.")
+    adjusted = conform_timing_netflix((seg1, seg2), NETFLIX_POLICY)
+    # Duración necesaria para 33 caracteres a 17 CPS = 33 / 17 = 1.941 s.
+    # nuevo end = 1.941 s, y respeta min_gap con seg2 (4.0 - 0.08 = 3.92)
+    assert adjusted[0].end == pytest.approx(1.941, abs=0.01)
+    assert adjusted[0].end <= 4.0 - NETFLIX_POLICY.min_gap
+
+
+def test_evaluate_audiovisual_compliance_metrics():
+    from subdub_titler.domain.segmentation import evaluate_audiovisual_compliance
+    # Subtítulo de 3 segundos con 42 caracteres -> CPS = 14 (<= 17)
+    seg = Segment(0.0, 3.0, "Línea uno muy clara\ny línea dos balanceada.")
+    t = Transcript((seg,), "es", "small", 3.0)
+    report = evaluate_audiovisual_compliance(t)
+    assert report["total_cues"] == 1
+    assert report["cps_compliance_rate"] == 100.0
+    assert report["cpl_compliance_rate"] == 100.0
+    assert report["lines_compliance_rate"] == 100.0
+    assert report["is_compliant"] is True
+

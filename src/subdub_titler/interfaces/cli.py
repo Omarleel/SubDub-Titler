@@ -35,14 +35,24 @@ def _request(path: Path, model: str, device: str, compute_type: str,
              vad_threshold: float = 0.35, vad_speech_pad_ms: int = 800,
              vad_min_silence_ms: int = 2000, no_speech_threshold: float = 0.40,
              normalize_loudness: bool = False,
-             isolate_dialogue: bool = False) -> TranscriptionRequest:
+             isolate_dialogue: bool = False,
+             forced_alignment: bool = False,
+             diarize: bool = False,
+             max_speakers: int = 4,
+             conform_netflix: bool = False,
+             suppress_hallucinations: bool = True,
+             adaptive_two_pass: bool = False) -> TranscriptionRequest:
     return TranscriptionRequest(
         source=path.resolve(), model_id=model, device=device,
         compute_type=compute_type, language=language, beam_size=beam_size,
         batch_size=batch_size, vad_threshold=vad_threshold,
         vad_speech_pad_ms=vad_speech_pad_ms, vad_min_silence_ms=vad_min_silence_ms,
         no_speech_threshold=no_speech_threshold, normalize_loudness=normalize_loudness,
-        isolate_dialogue=isolate_dialogue,
+        isolate_dialogue=isolate_dialogue, forced_alignment=forced_alignment,
+        diarize=diarize, max_speakers=max_speakers,
+        conform_netflix=conform_netflix,
+        suppress_hallucinations=suppress_hallucinations,
+        adaptive_two_pass=adaptive_two_pass,
     )
 
 
@@ -84,6 +94,25 @@ def transcribe(
     no_speech_threshold: Annotated[float, typer.Option(help="Umbral de no-habla")] = 0.40,
     normalize_loudness: Annotated[bool, typer.Option(help="Normalizar sonoridad EBU R128")] = False,
     isolate_dialogue: Annotated[bool, typer.Option(help="Aislar voz con Demucs")] = False,
+    forced_alignment: Annotated[
+        bool, typer.Option("--align / --no-align", help="Alineación forzada fonema/CTC con MMS-FA")
+    ] = False,
+    diarize: Annotated[
+        bool, typer.Option("--diarize / --no-diarize", help="Detección y marcado de hablantes")
+    ] = False,
+    max_speakers: Annotated[int, typer.Option(help="Máximo número de hablantes a distinguir")] = 4,
+    conform_netflix: Annotated[
+        bool, typer.Option("--netflix / --no-netflix",
+                           help="Norma Netflix / BBC: máx 42 CPL, saltos sintácticos, máx 17 CPS")
+    ] = False,
+    suppress_hallucinations: Annotated[
+        bool, typer.Option("--suppress-hallucinations / --no-suppress-hallucinations",
+                           help="Supresión de alucinaciones en silencio y música de fondo")
+    ] = True,
+    two_pass: Annotated[
+        bool, typer.Option("--two-pass / --no-two-pass",
+                           help="Inferencia adaptativa en dos pasadas con Dynamic Prompting")
+    ] = False,
     profile: Annotated[Path | None, typer.Option(help="Reporte JSON de spans")] = None,
     cprofile: Annotated[Path | None, typer.Option(help="Archivo .pstats")] = None,
 ) -> None:
@@ -94,6 +123,10 @@ def transcribe(
             vad_threshold=vad_threshold, vad_speech_pad_ms=speech_pad_ms,
             vad_min_silence_ms=vad_min_silence_ms, no_speech_threshold=no_speech_threshold,
             normalize_loudness=normalize_loudness, isolate_dialogue=isolate_dialogue,
+            forced_alignment=forced_alignment, diarize=diarize, max_speakers=max_speakers,
+            conform_netflix=conform_netflix,
+            suppress_hallucinations=suppress_hallucinations,
+            adaptive_two_pass=two_pass,
         )
         target = output or input.with_suffix(f".{format}")
         if format not in ("srt", "vtt"):
@@ -103,7 +136,17 @@ def transcribe(
         if isolate_dialogue:
             from subdub_titler.infrastructure.demucs_separator import LazyDemucsSeparator
             separator = LazyDemucsSeparator(device=device)
-        use_case = TranscribeUseCase(registry, separator=separator)
+        aligner = None
+        if forced_alignment:
+            from subdub_titler.infrastructure.ctc_aligner import LazyMmsForcedAligner
+            aligner = LazyMmsForcedAligner(device=device)
+        diarizer = None
+        if diarize:
+            from subdub_titler.infrastructure.diarization import LazySpeakerDiarizer
+            diarizer = LazySpeakerDiarizer(device=device)
+        use_case = TranscribeUseCase(
+            registry, separator=separator, aligner=aligner, diarizer=diarizer,
+        )
         profiler = SpanProfiler()
         with profile_python(cprofile):
             result = use_case.execute(request, profiler)
@@ -118,6 +161,16 @@ def transcribe(
         console.print(f"Idioma: {result.transcript.language}; "
                       f"tiempo ASR: {result.elapsed_seconds:.2f}s; "
                       f"RTF: {result.rtf if result.rtf is not None else 'N/D'}")
+        if conform_netflix:
+            from subdub_titler.domain.segmentation import evaluate_audiovisual_compliance
+            comp = evaluate_audiovisual_compliance(result.transcript)
+            console.print(
+                f"[bold cyan]Conformidad Netflix/BBC:[/bold cyan] "
+                f"CPS medio: {comp['mean_cps']} (máx: {comp['max_cps']}) | "
+                f"CPS conforme: {comp['cps_compliance_rate']}% | "
+                f"CPL conforme: {comp['cpl_compliance_rate']}% | "
+                f"Balance líneas: {comp['mean_line_balance']}"
+            )
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         error_console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(1) from exc

@@ -142,7 +142,16 @@ export function CueList({ segments, time, onCueClick, selection, variant = 'prev
       const selected = !!selection && i >= selection[0] && i <= selection[1]
       return <button type="button" key={i} onClick={e => onCueClick(i, e)}
         className={`block w-full text-left text-inherit cursor-pointer py-[12px] px-[15px] border-0 border-b border-b-[#263144] border-l-[3px] last:border-b-0 ${cueState(i === playing, selected)}`}>
-        <span className="font-[monospace] text-[10px] text-[#9899ff]">{clock(s.start)} → {clock(s.end)}</span>
+        <div className="flex items-center gap-[8px]">
+          <span className="font-[monospace] text-[10px] text-[#9899ff]">{clock(s.start)} → {clock(s.end)}</span>
+          {s.speaker && (
+            <span className="text-[10px] font-bold px-[6px] py-[1px] rounded bg-[#272658] text-[#a1a7ff] border border-[#3e3d87]">
+              {s.speaker.startsWith('S') && !isNaN(Number(s.speaker.slice(1)))
+                ? `Hablante ${Number(s.speaker.slice(1)) + 1}`
+                : s.speaker}
+            </span>
+          )}
+        </div>
         <p className="text-[13px] leading-[1.6] mt-[7px] mx-0 mb-0 text-[#d7dfed]">{s.text}</p>
       </button>
     })}

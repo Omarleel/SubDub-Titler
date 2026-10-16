@@ -91,6 +91,12 @@ export function App() {
   const [profileType, setProfileType] = useState<'standard' | 'sensitive' | 'isolate'>('standard')
   const [normalizeLoudness, setNormalizeLoudness] = useState(true)
   const [isolateDialogue, setIsolateDialogue] = useState(false)
+  const [forcedAlignment, setForcedAlignment] = useState(false)
+  const [diarize, setDiarize] = useState(false)
+  const [maxSpeakers, setMaxSpeakers] = useState(4)
+  const [conformNetflix, setConformNetflix] = useState(false)
+  const [suppressHallucinations, setSuppressHallucinations] = useState(true)
+  const [adaptiveTwoPass, setAdaptiveTwoPass] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -140,6 +146,12 @@ export function App() {
       }
       data.set('normalize_loudness', String(normalizeLoudness))
       data.set('isolate_dialogue', String(isolateDialogue))
+      data.set('forced_alignment', String(forcedAlignment))
+      data.set('diarize', String(diarize))
+      data.set('max_speakers', String(maxSpeakers))
+      data.set('conform_netflix', String(conformNetflix))
+      data.set('suppress_hallucinations', String(suppressHallucinations))
+      data.set('adaptive_two_pass', String(adaptiveTwoPass))
       const result = await api.create(data)
       navigate({ job: result.id })
       setJobs(prev => [result, ...prev])
@@ -240,6 +252,51 @@ export function App() {
                     onChange={e => setIsolateDialogue(e.target.checked)}
                   />
                   <span>Aislar diálogo con Demucs (elimina música y ruido ambiental antes de ASR)</span>
+                </label>
+                <label className="flex items-center gap-[10px] text-[12px] text-[#97a8bc] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer accent-[#7b81ff]"
+                    checked={forcedAlignment}
+                    onChange={e => setForcedAlignment(e.target.checked)}
+                  />
+                  <span>Alineación forzada CTC (MMS-FA: sincronización milimétrica de palabras)</span>
+                </label>
+                <label className="flex items-center gap-[10px] text-[12px] text-[#97a8bc] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer accent-[#7b81ff]"
+                    checked={diarize}
+                    onChange={e => setDiarize(e.target.checked)}
+                  />
+                  <span>Diarización ASR (identificar y etiquetar hablantes: [Hablante 1], [Hablante 2])</span>
+                </label>
+                <label className="flex items-center gap-[10px] text-[12px] text-[#97a8bc] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer accent-[#7b81ff]"
+                    checked={conformNetflix}
+                    onChange={e => setConformNetflix(e.target.checked)}
+                  />
+                  <span>Norma profesional Netflix / BBC (máx. 42 CPL, saltos sintácticos y límite de 17 CPS)</span>
+                </label>
+                <label className="flex items-center gap-[10px] text-[12px] text-[#97a8bc] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer accent-[#7b81ff]"
+                    checked={suppressHallucinations}
+                    onChange={e => setSuppressHallucinations(e.target.checked)}
+                  />
+                  <span>Supresión activa de alucinaciones en silencio y BGM (bucles zlib / frases fantasma de YouTube)</span>
+                </label>
+                <label className="flex items-center gap-[10px] text-[12px] text-[#97a8bc] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer accent-[#7b81ff]"
+                    checked={adaptiveTwoPass}
+                    onChange={e => setAdaptiveTwoPass(e.target.checked)}
+                  />
+                  <span>Inferencia adaptativa en dos pasadas (Dynamic Prompting para nombres propios y rescate de baja confianza)</span>
                 </label>
               </div>
               <button disabled={!file || busy} className={ui.primaryBtn} onClick={submit}>{busy ? 'Enviando…' : '▶ Iniciar transcripción'} <span className="ml-auto">→</span></button>

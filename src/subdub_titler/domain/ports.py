@@ -24,6 +24,12 @@ class SubtitleRenderer(Protocol):
     def render(self, transcript: Transcript) -> str: ...
 
 
+class ForcedAligner(Protocol):
+    """Alineación forzada a nivel de fonema/carácter (CTC) para precisión milimétrica."""
+
+    def align(self, audio_source: Path, transcript: Transcript) -> Transcript: ...
+
+
 ProfilerFactory = Callable[[], object]
 
 

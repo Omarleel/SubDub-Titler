@@ -121,6 +121,12 @@ def test_upload_job_with_vad_and_preprocessing_params(tmp_path):
             "no_speech_threshold": "0.35",
             "normalize_loudness": "true",
             "isolate_dialogue": "true",
+            "forced_alignment": "true",
+            "diarize": "true",
+            "max_speakers": "3",
+            "conform_netflix": "true",
+            "suppress_hallucinations": "false",
+            "adaptive_two_pass": "true",
         }, files={"file": ("sample.wav", b"not-a-wav", "audio/wav")})
         assert response.status_code == 202
         job = response.json()
@@ -130,4 +136,10 @@ def test_upload_job_with_vad_and_preprocessing_params(tmp_path):
         assert job["params"]["no_speech_threshold"] == 0.35
         assert job["params"]["normalize_loudness"] is True
         assert job["params"]["isolate_dialogue"] is True
+        assert job["params"]["forced_alignment"] is True
+        assert job["params"]["diarize"] is True
+        assert job["params"]["max_speakers"] == 3
+        assert job["params"]["conform_netflix"] is True
+        assert job["params"]["suppress_hallucinations"] is False
+        assert job["params"]["adaptive_two_pass"] is True
 

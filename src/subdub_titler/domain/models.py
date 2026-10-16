@@ -20,6 +20,9 @@ class Segment:
     end: float
     text: str
     words: tuple[Word, ...] = ()
+    speaker: str | None = None
+    avg_logprob: float | None = None
+    no_speech_prob: float | None = None
 
     def __post_init__(self) -> None:
         if self.start < 0 or self.end <= self.start:
@@ -55,10 +58,18 @@ class TranscriptionRequest:
     no_speech_threshold: float = 0.40
     normalize_loudness: bool = False
     isolate_dialogue: bool = False
+    forced_alignment: bool = False
+    diarize: bool = False
+    max_speakers: int = 4
+    conform_netflix: bool = False
+    suppress_hallucinations: bool = True
+    adaptive_two_pass: bool = False
 
     def __post_init__(self) -> None:
         if not self.source.is_file():
             raise FileNotFoundError(f"Archivo no encontrado: {self.source}")
+        if self.max_speakers < 1 or self.max_speakers > 20:
+            raise ValueError("max_speakers debe estar entre 1 y 20")
         if self.beam_size < 1 or self.beam_size > 20:
             raise ValueError("beam_size debe estar entre 1 y 20")
         if self.batch_size < 1 or self.batch_size > 64:

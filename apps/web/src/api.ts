@@ -1,4 +1,4 @@
-export type Segment = { start: number; end: number; text: string }
+export type Segment = { start: number; end: number; text: string; speaker?: string | null }
 export type Transcript = {
   language: string; model_id: string; duration_seconds: number | null;
   text: string; segments: Segment[]; elapsed_seconds: number; rtf: number | null;

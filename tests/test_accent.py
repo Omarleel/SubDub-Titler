@@ -95,7 +95,7 @@ def test_listening_page_includes_naturalness_scale(tmp_path: Path):
 
 
 def test_dual_cfg_log_probs_equivalence_and_normalization():
-    import torch
+    torch = pytest.importorskip("torch")
     import torch.nn.functional as F
 
     from subdub_titler.infrastructure.omnivoice_fast import dual_cfg_log_probs
@@ -153,7 +153,10 @@ def test_dub_request_guidance_validation(tmp_path: Path):
 def test_omnivoice_fast_install_routes_batch_1_with_dual_cfg(monkeypatch):
     from types import SimpleNamespace
 
+    import subdub_titler.infrastructure.omnivoice_fast as fast_mod
     from subdub_titler.infrastructure.omnivoice_fast import install
+
+    monkeypatch.setattr(fast_mod, "supported", lambda: True)
 
     calls = []
 
@@ -165,7 +168,6 @@ def test_omnivoice_fast_install_routes_batch_1_with_dual_cfg(monkeypatch):
         calls.append("split")
         return ["split_result"]
 
-    import subdub_titler.infrastructure.omnivoice_fast as fast_mod
     monkeypatch.setattr(fast_mod, "_generate_split", mock_split)
 
     dummy_model = SimpleNamespace(_generate_iterative=mock_original)
@@ -199,7 +201,7 @@ def test_omnivoice_fast_install_routes_batch_1_with_dual_cfg(monkeypatch):
 
 
 def test_accent_proxy_pair_and_set_persistence(tmp_path: Path):
-    import torch
+    torch = pytest.importorskip("torch")
 
     from subdub_titler.infrastructure.accent_proxy import AccentProxyPair, AccentProxySet
 
@@ -259,7 +261,7 @@ def test_accent_proxy_pair_and_set_persistence(tmp_path: Path):
 
 
 def test_aag_cfg_log_probs_formula_and_normalization():
-    import torch
+    torch = pytest.importorskip("torch")
     import torch.nn.functional as F
 
     from subdub_titler.infrastructure.omnivoice_fast import aag_cfg_log_probs, dual_cfg_log_probs
@@ -304,6 +306,7 @@ def test_aag_cfg_log_probs_formula_and_normalization():
 
 
 def test_aag_requires_proxies_when_beta_positive():
+    pytest.importorskip("torch")
     from types import SimpleNamespace
 
     from subdub_titler.infrastructure.omnivoice_fast import _generate_split

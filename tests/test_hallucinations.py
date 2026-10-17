@@ -72,6 +72,14 @@ def test_is_hallucination_segment_conditions():
         compression_ratio=1.3,
     ) is False
 
+    # Habla legítima con repetición coloquial ("yeah, yeah, yeah") con alta confianza acústica
+    assert is_hallucination_segment(
+        "That's so much better. Yeah. Oh, my gosh. Yes. Oh, yeah. Actually, that feels really, really good. Yeah, yeah, yeah. Oh, yeah.",
+        avg_logprob=-0.14,
+        no_speech_prob=0.12,
+        compression_ratio=1.37,
+    ) is False
+
 
 def test_extract_dynamic_prompt():
     segments = [

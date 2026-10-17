@@ -44,17 +44,20 @@ def is_repetition_loop(text: str) -> bool:
     words = [w.lower().strip(".,?!;:-_\"'()[]") for w in text.split() if w.strip()]
     if not words:
         return False
-    # 1. Monopalabra repetida 3+ veces consecutivas (ej. "de de de")
+
+    # 1. Monopalabra repetida 3+ veces consecutivas (ej. "de de de", "la casa de de de campo")
     for i in range(len(words) - 2):
         if words[i] == words[i + 1] == words[i + 2]:
             return True
-    # 2. Bigrama repetido 3+ veces consecutivas (ej. "en la en la en la")
+
+    # 2. Bigrama repetido 3+ veces consecutivas (6+ tokens, ej. "en la en la en la")
     if len(words) >= 6:
         for i in range(len(words) - 5):
             if (words[i] == words[i + 2] == words[i + 4] and
                 words[i + 1] == words[i + 3] == words[i + 5]):
                 return True
-    # 3. Palabra dominante en textos de 5+ palabras (más del 60% de tokens iguales)
+
+    # 3. Palabra dominante (60%+ de tokens iguales en 5+ palabras, ej. "sí claro sí sí sí")
     if len(words) >= 5:
         counts: dict[str, int] = {}
         for w in words:
@@ -62,6 +65,7 @@ def is_repetition_loop(text: str) -> bool:
         top_count = max(counts.values())
         if top_count / len(words) >= 0.60:
             return True
+
     return False
 
 
@@ -101,12 +105,31 @@ def is_hallucination_segment(
     if not alphanumeric:
         return True
 
-    # 2. Bucle por ratio de compresión zlib de Whisper
+    # 2. Salvaguarda de alta certeza acústica:
+    # Si Whisper tiene certeza acústica alta, baja probabilidad de no-habla y compresión normal,
+    # es habla legítima del usuario y nunca debe suprimirse.
+    is_high_acoustic_confidence = (
+        avg_logprob is not None and avg_logprob >= -0.50 and
+        (no_speech_prob is None or no_speech_prob <= 0.35) and
+        (compression_ratio is None or compression_ratio <= 2.2)
+    )
+    if is_high_acoustic_confidence:
+        return False
+
+    # 3. Bucle patológico por ratio de compresión zlib de Whisper (> 2.4)
     if compression_ratio is not None and compression_ratio > 2.4:
         return True
 
-    # 3. Bucle n-gram detectado sintácticamente
+    # 4. Bucle n-gram detectado sintácticamente
     if is_repetition_loop(clean):
+        # Si tiene certeza acústica moderada/alta, o el texto es rico en vocabulario variado
+        # (ej. habla coloquial con 'yeah, yeah, yeah' dentro de una frase amplia),
+        # NO se descarta como alucinación.
+        words = [w.lower().strip(".,?!;:-_\"'()[]") for w in clean.split() if w.strip()]
+        if avg_logprob is not None and avg_logprob >= -0.60 and (no_speech_prob is None or no_speech_prob <= 0.40):
+            return False
+        if len(words) >= 8 and (len(set(words)) / len(words)) >= 0.50:
+            return False
         return True
 
     # 4. Sink phrases de entrenamiento

@@ -127,9 +127,37 @@ class FasterWhisperAdapter:
                 # Decodifica varios fragmentos VAD en paralelo: ~3.6x en RTX 5060 Ti.
                 if self._batched is None:
                     self._batched = BatchedInferencePipeline(self._model)
-                segments, info = self._batched.transcribe(
-                    audio, batch_size=request.batch_size, **options,
-                )
+                if request.vad_filter:
+                    from faster_whisper.vad import VadOptions, get_speech_timestamps
+                    vad_opts = VadOptions(
+                        threshold=request.vad_threshold,
+                        min_silence_duration_ms=request.vad_min_silence_ms,
+                        speech_pad_ms=request.vad_speech_pad_ms,
+                        max_speech_duration_s=30,
+                    )
+                    raw_ts = get_speech_timestamps(audio, vad_opts)
+                    if not raw_ts:
+                        return Transcript(
+                            segments=(),
+                            language="en" if request.language == "auto" else request.language,
+                            model_id=self.model_id,
+                            duration_seconds=float(len(audio) / SAMPLING_RATE),
+                        )
+                    clip_ts = [
+                        {"start": float(t["start"] / SAMPLING_RATE), "end": float(t["end"] / SAMPLING_RATE)}
+                        for t in raw_ts
+                    ]
+                    batched_opts = dict(options)
+                    batched_opts["vad_filter"] = False
+                    batched_opts.pop("vad_parameters", None)
+                    batched_opts["clip_timestamps"] = clip_ts
+                    segments, info = self._batched.transcribe(
+                        audio, batch_size=request.batch_size, **batched_opts,
+                    )
+                else:
+                    segments, info = self._batched.transcribe(
+                        audio, batch_size=request.batch_size, **options,
+                    )
             else:
                 segments, info = self._model.transcribe(audio, **options)
         # Consumir el generador: de otro modo mediríamos solo la preparación.

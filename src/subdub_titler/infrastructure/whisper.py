@@ -129,10 +129,12 @@ class FasterWhisperAdapter:
                     self._batched = BatchedInferencePipeline(self._model)
                 if request.vad_filter:
                     from faster_whisper.vad import VadOptions, get_speech_timestamps
+                    effective_threshold = min(request.vad_threshold, 0.20)
+                    effective_pad = max(request.vad_speech_pad_ms, 1000)
                     vad_opts = VadOptions(
-                        threshold=request.vad_threshold,
+                        threshold=effective_threshold,
                         min_silence_duration_ms=request.vad_min_silence_ms,
-                        speech_pad_ms=request.vad_speech_pad_ms,
+                        speech_pad_ms=effective_pad,
                         max_speech_duration_s=30,
                     )
                     raw_ts = get_speech_timestamps(audio, vad_opts)
@@ -147,10 +149,24 @@ class FasterWhisperAdapter:
                         {"start": float(t["start"] / SAMPLING_RATE), "end": float(t["end"] / SAMPLING_RATE)}
                         for t in raw_ts
                     ]
+                    # Fusionar micropausas conversacionales breves (<= 2.5s) que quepan en la ventana de 30s
+                    # para evitar cortes abruptos en susurros o colas de frase.
+                    merged_clips: list[dict[str, float]] = []
+                    for c in clip_ts:
+                        if not merged_clips:
+                            merged_clips.append(dict(c))
+                        else:
+                            last = merged_clips[-1]
+                            gap = c["start"] - last["end"]
+                            if gap <= 2.5 and (c["end"] - last["start"]) <= 30.0:
+                                last["end"] = c["end"]
+                            else:
+                                merged_clips.append(dict(c))
+
                     batched_opts = dict(options)
                     batched_opts["vad_filter"] = False
                     batched_opts.pop("vad_parameters", None)
-                    batched_opts["clip_timestamps"] = clip_ts
+                    batched_opts["clip_timestamps"] = merged_clips
                     segments, info = self._batched.transcribe(
                         audio, batch_size=request.batch_size, **batched_opts,
                     )

@@ -167,7 +167,7 @@ def diarization_windows(cues: Sequence[DubCue], seconds: float = 1.2) -> list[Wi
     windows: list[Window] = []
     for position, cue in enumerate(cues):
         if not cue.words:
-            windows.append(Window(position, 0, -1, cue.start, cue.end))
+            windows.append(Window(position, 0, -1, cue.start, max(cue.end, cue.start + 0.05)))
             continue
         first = 0
         own: list[Window] = []
@@ -178,6 +178,11 @@ def diarization_windows(cues: Sequence[DubCue], seconds: float = 1.2) -> list[Wi
         if len(own) > 1 and own[-1].end - own[-1].start < seconds / 2:
             tail = own.pop()
             own[-1] = Window(position, own[-1].first, tail.last, own[-1].start, tail.end)
+        if own:
+            own[0] = Window(position, own[0].first, own[0].last, min(cue.start, own[0].start),
+                            own[0].end)
+            own[-1] = Window(position, own[-1].first, own[-1].last, own[-1].start,
+                             max(cue.end, own[-1].end))
         windows += own
     return windows
 

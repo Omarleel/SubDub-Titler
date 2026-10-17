@@ -111,3 +111,31 @@ def test_time_stretch_exact_length_keeps_pitch():
         assert len(stretched) == round(seconds * rate)
         spectrum = np.abs(np.fft.rfft(stretched[: rate // 2]))
         assert abs(spectrum.argmax() * 2 - 200) <= 4
+
+
+def test_diarization_windows_cover_cue_boundaries_with_short_words():
+    # Cue donde la única palabra termina mucho antes que el cue (ej. interjección 'Uh')
+    cue = DubCue(75, 615.13, 615.963, "Uh", words=words((615.13, 615.171, " Uh")))
+    windows = diarization_windows([cue], seconds=1.2)
+    assert len(windows) == 1
+    # La ventana no debe quedar truncada a 41 ms sino abarcar el cue
+    assert windows[0].start == 615.13
+    assert windows[0].end == pytest.approx(615.963)
+    assert windows[0].end - windows[0].start > 0.8
+
+
+def test_waveform_pads_short_and_empty_clips():
+    torch = pytest.importorskip("torch")
+    from subdub_titler.domain.dubbing import AudioClip
+    from subdub_titler.infrastructure.dub_eval import MIN_EVAL_SAMPLES, _waveform
+
+    # Audio vacío
+    empty_clip = AudioClip([], 16_000)
+    w_empty = _waveform(empty_clip, "cpu")
+    assert w_empty.shape[-1] >= MIN_EVAL_SAMPLES
+
+    # Audio ultracorto (400 muestras = 25 ms, tamaño que causaba error espacial L=1)
+    short_clip = AudioClip([0.1] * 400, 16_000)
+    w_short = _waveform(short_clip, "cpu")
+    assert w_short.shape[-1] >= MIN_EVAL_SAMPLES
+

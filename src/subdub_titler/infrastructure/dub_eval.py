@@ -18,6 +18,7 @@ from subdub_titler.infrastructure.profiling import active_profiler
 
 EVAL_REPO = "k2-fsa/TTS_eval_models"
 EVAL_RATE = 16_000
+MIN_EVAL_SAMPLES = 1600  # 100 ms a 16 kHz: margen seguro para WavLM (L >= 4) y UTMOS
 
 
 def eval_models_dir() -> Path:
@@ -28,12 +29,28 @@ def eval_models_dir() -> Path:
     ]))
 
 
-def _waveform(clip: AudioClip, device: str):
+def _waveform(clip: AudioClip, device: str, min_samples: int = MIN_EVAL_SAMPLES):
     import torch
     import torchaudio
     wave = torch.as_tensor(clip.samples, dtype=torch.float32)
     if clip.sample_rate != EVAL_RATE:
         wave = torchaudio.functional.resample(wave, clip.sample_rate, EVAL_RATE)
+    if wave.ndim == 1:
+        if wave.numel() == 0:
+            wave = torch.zeros(min_samples, dtype=torch.float32)
+        elif wave.numel() < min_samples:
+            pad_needed = min_samples - wave.numel()
+            pad_left = pad_needed // 2
+            pad_right = pad_needed - pad_left
+            wave = torch.nn.functional.pad(wave, (pad_left, pad_right), mode="constant", value=0.0)
+    elif wave.ndim == 2:
+        if wave.shape[-1] == 0:
+            wave = torch.zeros((wave.shape[0], min_samples), dtype=torch.float32)
+        elif wave.shape[-1] < min_samples:
+            pad_needed = min_samples - wave.shape[-1]
+            pad_left = pad_needed // 2
+            pad_right = pad_needed - pad_left
+            wave = torch.nn.functional.pad(wave, (pad_left, pad_right), mode="constant", value=0.0)
     return wave.to(device)
 
 
@@ -82,6 +99,8 @@ class WavLmSpeakerEncoder(_LazyTorchModel):
         return model
 
     def embeddings(self, clips: Sequence[AudioClip]) -> list[list[float]]:
+        if not clips:
+            return []
         import torch
         model = self.model()
         with torch.inference_mode():
@@ -89,6 +108,8 @@ class WavLmSpeakerEncoder(_LazyTorchModel):
                     for clip in clips]
 
     def similarity(self, reference: AudioClip, clips: Sequence[AudioClip]) -> list[float]:
+        if not clips:
+            return []
         import torch
         model = self.model()
         with torch.inference_mode():
@@ -110,6 +131,8 @@ class Utmos22Predictor(_LazyTorchModel):
         return model
 
     def mos(self, clips: Sequence[AudioClip]) -> list[float]:
+        if not clips:
+            return []
         import torch
         model = self.model()
         with torch.inference_mode():

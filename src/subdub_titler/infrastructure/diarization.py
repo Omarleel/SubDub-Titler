@@ -30,10 +30,11 @@ class EmbeddingDiarizer:
         import numpy as np
         if not spans:
             return []
-        clips = [self._audio.load(source, EVAL_RATE, start, end) for start, end in spans]
+        clips = [self._audio.load(source, EVAL_RATE, start, max(end, start + 0.05))
+                 for start, end in spans]
         vectors = np.asarray(self._encoder.embeddings(clips), dtype=np.float64)
         vectors /= np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-9
-        durations = np.array([end - start for start, end in spans])
+        durations = np.array([max(0.0, end - start) for start, end in spans])
         reliable = np.flatnonzero(durations >= self.min_seconds)
         if len(reliable) < 2 or max_speakers == 1:
             return ["S0"] * len(spans)

@@ -57,7 +57,9 @@ class ListeningPanel:
         cues = shared_cues(reports, limit, min_seconds, seed)
         if not cues:
             raise ValueError("Las variantes no comparten frases con el mismo texto")
-        voice = next(iter(spaces.values())).stems / "voice.flac"
+        by_variant = dict(zip(spaces, reports, strict=True))
+        voice = Path(reports[0].outputs.get("voice_stem")
+                     or next(iter(spaces.values())).stems / "voice.flac")
         rng = random.Random(seed + 1)
         used: set[str] = set()
 
@@ -75,7 +77,9 @@ class ListeningPanel:
             clips = []
             for variant, space in spaces.items():
                 file = name()
-                self._audio.save(self._audio.load(space.cue(cue.index), SAMPLE_RATE), out / file)
+                cue_dir = Path(by_variant[variant].outputs.get("cues") or space.root / "cues")
+                self._audio.save(self._audio.load(cue_dir / f"{cue.index:04d}.wav", SAMPLE_RATE),
+                                 out / file)
                 clips.append(PanelClip(variant, file))
             rng.shuffle(clips)
             items.append(PanelItem(cue.index, cue.target_text, original, tuple(clips)))

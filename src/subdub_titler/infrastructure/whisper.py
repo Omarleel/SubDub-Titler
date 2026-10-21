@@ -146,10 +146,11 @@ class FasterWhisperAdapter:
                             duration_seconds=float(len(audio) / SAMPLING_RATE),
                         )
                     clip_ts = [
-                        {"start": float(t["start"] / SAMPLING_RATE), "end": float(t["end"] / SAMPLING_RATE)}
+                        {"start": float(t["start"] / SAMPLING_RATE),
+                         "end": float(t["end"] / SAMPLING_RATE)}
                         for t in raw_ts
                     ]
-                    # Fusionar micropausas conversacionales breves (<= 2.5s) que quepan en la ventana de 30s
+                    # Fusionar micropausas breves (<= 2.5s) que quepan en la ventana de 30s
                     # para evitar cortes abruptos en susurros o colas de frase.
                     merged_clips: list[dict[str, float]] = []
                     for c in clip_ts:

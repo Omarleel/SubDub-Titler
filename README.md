@@ -6,7 +6,29 @@ traducción NLLB, clonación de voz OmniVoice y separación Demucs; CLI Typer, A
 Diseñado y validado en NVIDIA RTX 5060 Ti 16 GB (Windows 11).
 
 > **Estado:** subtitulado (fases 0–7) y doblaje de voz (fases 8–13) implementados y medidos en GPU real.
-> Pendiente: segundo motor ASR (Qwen3-ASR), alineación forzada externa, editor profesional con forma de onda.
+> Pendiente: segundo motor ASR (Qwen3-ASR) y editor profesional con forma de onda.
+> Alineación forzada MMS disponible; requiere sus dependencias y pesos.
+
+## Fiabilidad y revisión de resultados
+
+- Los hablantes identificados en una transcripción se conservan al doblar. La opción
+  **Recalcular hablantes** fuerza una nueva diarización.
+- **Referencias por voz** permite comparar 1, 2, 4 u 8 referencias; la selección llega al motor.
+- Cada edición de doblaje genera una revisión aislada. **Deshacer última edición** restaura
+  el audio, informe y valoraciones anteriores. Una edición fallida no reemplaza el resultado activo.
+- El informe vigente se descarga desde **Informe de la revisión activa**; en la API SQLite es
+  la autoridad de la revisión activa. El report.json raíz corresponde al doblaje inicial;
+  cada revisión conserva su propio report.json. La CLI publica su report.json atómicamente.
+- El historial carga páginas de 30 trabajos y excluye las regeneraciones internas antes de paginar.
+  Los informes completos se consultan sólo para los trabajos seleccionados.
+- **Sólo frases que necesitan revisión** filtra el banco de doblaje por inteligibilidad y velocidad.
+- **Cancelar trabajo** actúa entre etapas; no interrumpe un kernel o subproceso activo.
+  **Reintentar** crea otro trabajo con la misma configuración desde el inicio; no reanuda por chunks.
+- CPU/CUDA se aplica también a aislamiento, alineación y diarización. CUDA ausente produce un error
+  explícito. La caché de Demucs comprueba SHA-256 y parámetros, no sólo nombre y fecha.
+
+Las revisiones se conservan en disco para permitir deshacer. La limpieza automática, la reanudación
+por etapa y el editor de subtítulos con forma de onda siguen pendientes.
 
 ## Instalación — Conda
 

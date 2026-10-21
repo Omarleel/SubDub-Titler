@@ -40,7 +40,7 @@ class DubCue:
 
 
 def cues_from_transcript(transcript: Transcript) -> tuple[DubCue, ...]:
-    return tuple(DubCue(i, s.start, s.end, s.text.strip(), words=s.words)
+    return tuple(DubCue(i, s.start, s.end, s.text.strip(), speaker=s.speaker or "S0", words=s.words)
                  for i, s in enumerate(s for s in transcript.segments if s.text.strip()))
 
 

@@ -55,13 +55,14 @@ class MmsForcedAligner(ForcedAligner, Releasable):
         import torch
         import torchaudio
 
+        if self.device == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA no disponible para alineación; usa --device cpu")
         bundle = torchaudio.pipelines.MMS_FA
         self._dictionary = bundle.get_dict()
         self._blank_id = self._dictionary["-"]
         self._star_id = self._dictionary["*"]
         model = bundle.get_model()
-        use_cuda = torch.cuda.is_available() and self.device == "cuda"
-        target_device = torch.device(self.device if use_cuda else "cpu")
+        target_device = torch.device(self.device)
         self._model = model.to(target_device).eval()
 
     def release(self) -> None:

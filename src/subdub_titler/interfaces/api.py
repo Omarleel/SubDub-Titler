@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -17,6 +17,7 @@ from subdub_titler.application.dubbing import DubComponentFactory, DubUseCase
 from subdub_titler.application.jobs import (
     DubCueJobHandler,
     DubJobHandler,
+    DubUndoJobHandler,
     LocalJobWorker,
     TranscribeJobHandler,
 )
@@ -120,15 +121,17 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
     from subdub_titler.infrastructure.diarization import LazySpeakerDiarizer
     dub_use_case = DubUseCase(transcripts, dub_factory)
     dub_handler = DubJobHandler(dub_use_case, jobs, output_dir)
-    transcribe_use_case = TranscribeUseCase(
-        registry,
-        separator=LazyDemucsSeparator(),
-        aligner=LazyMmsForcedAligner(),
-        diarizer=LazySpeakerDiarizer(),
-    )
+    def transcribe_use_case(device: str) -> TranscribeUseCase:
+        return TranscribeUseCase(
+            registry,
+            separator=LazyDemucsSeparator(device=device),
+            aligner=LazyMmsForcedAligner(device=device),
+            diarizer=LazySpeakerDiarizer(device=device),
+        )
     worker = LocalJobWorker(jobs, {
         "transcribe": TranscribeJobHandler(transcribe_use_case, output_dir),
         "dub": dub_handler,
+        "dub-undo": DubUndoJobHandler(jobs),
         "dub-cue": DubCueJobHandler(dub_use_case, jobs, dub_handler),
     })
 
@@ -249,14 +252,39 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
             await file.close()
 
     @app.get("/api/v1/jobs")
-    def list_jobs(kind: str | None = None) -> list[dict]:
-        return jobs.list(kind=kind)
+    def list_jobs(kind: str | None = None, limit: int = Query(100, ge=1, le=500),
+                  offset: int = Query(0, ge=0), visible: bool = False,
+                  summary: bool = False) -> list[dict]:
+        return jobs.list(limit=limit, kind=kind, offset=offset, visible=visible, summary=summary)
 
     @app.get("/api/v1/jobs/{identifier}")
     def get_job(identifier: str) -> dict:
         job = jobs.get(identifier)
         if job is None:
             raise HTTPException(404, "Job no encontrado")
+        return job
+
+    @app.post("/api/v1/jobs/{identifier}/cancel")
+    def cancel_job(identifier: str) -> dict:
+        job = get_job(identifier)
+        if job["kind"] not in ("transcribe", "dub"):
+            raise HTTPException(409, "Las ediciones se completan antes de deshacerlas")
+        if not jobs.cancel(identifier):
+            raise HTTPException(409, "El trabajo ya terminó o tiene una cancelación pendiente")
+        return get_job(identifier)
+
+    @app.post("/api/v1/jobs/{identifier}/retry", status_code=202)
+    def retry_job(identifier: str) -> dict:
+        previous = get_job(identifier)
+        if previous["status"] not in ("failed", "cancelled"):
+            raise HTTPException(409, "Sólo se pueden reintentar trabajos fallidos o cancelados")
+        if not Path(previous["file_path"]).is_file():
+            raise HTTPException(410, "El archivo original ya no está disponible")
+        job = jobs.create(Path(previous["file_path"]), previous["original_name"],
+                          previous["model_id"], previous["language"], previous["device"],
+                          previous["compute_type"], kind=previous["kind"],
+                          params=previous["params"], parent_id=previous["parent_id"])
+        worker.enqueue(job["id"])
         return job
 
     @app.get("/api/v1/jobs/{identifier}/subtitles")
@@ -322,10 +350,34 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
         worker.enqueue(job["id"])
         return job
 
+    @app.get("/api/v1/jobs/{identifier}/dub/report")
+    def dub_report(identifier: str) -> dict:
+        return _completed(identifier, "dub")["result"]
+
+    @app.get("/api/v1/jobs/{identifier}/dub/revisions")
+    def dub_revisions(identifier: str) -> dict:
+        _completed(identifier, "dub")
+        return {"count": jobs.revision_count(identifier)}
+
+    @app.post("/api/v1/jobs/{identifier}/dub/undo", status_code=202)
+    def undo_dub(identifier: str) -> dict:
+        parent = _completed(identifier, "dub")
+        if not jobs.revision_count(identifier):
+            raise HTTPException(409, "No hay una revisión anterior")
+        job = jobs.create(Path(parent["file_path"]), parent["original_name"],
+                          parent["model_id"], parent["language"], parent["device"],
+                          parent["compute_type"], kind="dub-undo", parent_id=identifier)
+        worker.enqueue(job["id"])
+        return job
+
     @app.get("/api/v1/jobs/{identifier}/dub/cues/{index}/audio")
     def dub_cue_audio(identifier: str, index: int) -> FileResponse:
-        _completed(identifier, "dub")
-        path = dub_handler.workdir(identifier) / "cues" / f"{index:04d}.wav"
+        job = _completed(identifier, "dub")
+        if not any(c["index"] == index for c in job["result"]["track"]):
+            raise HTTPException(404, "Cue no encontrado")
+        cues = Path(job["result"]["outputs"].get("cues")
+                    or dub_handler.workdir(identifier) / "cues")
+        path = cues / f"{index:04d}.wav"
         if not path.is_file():
             raise HTTPException(404, "Cue no encontrado")
         return FileResponse(path, media_type="audio/wav")
@@ -345,7 +397,9 @@ def create_app(home: Path | None = None, registry: ModelRegistry | None = None,
 
     @app.post("/api/v1/jobs/{identifier}/dub/cues/{index}/rating")
     def rate_cue(identifier: str, index: int, payload: CueRating) -> dict:
-        _completed(identifier, "dub")
+        job = _completed(identifier, "dub")
+        if not any(c["index"] == index for c in job["result"]["track"]):
+            raise HTTPException(404, "Cue no encontrado")
         jobs.rate(identifier, index, payload.score, payload.note)
         return cue_ratings(identifier)
 

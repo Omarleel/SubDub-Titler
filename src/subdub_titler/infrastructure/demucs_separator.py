@@ -1,8 +1,10 @@
 """Separación voz/fondo con Demucs (MIT). Único adaptador con dependencia de demucs.
 
 La voz separada sirve de referencia limpia para clonar; el fondo, de base para la mezcla.
-Los stems se reutilizan si ya existen y son más recientes que el origen (benchmarks).
+Los stems se reutilizan sólo si coinciden el contenido del origen y la configuración.
 """
+import hashlib
+import json
 import shutil
 import subprocess
 import threading
@@ -48,15 +50,25 @@ class DemucsSeparator:
 
     def separate(self, source: Path, workdir: Path) -> Stems:
         stems = Stems(workdir / "voice.flac", workdir / "background.flac")
-        if all(p.is_file() and p.stat().st_mtime >= source.stat().st_mtime
-               for p in (stems.voice, stems.background)):
+        with source.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        identity = {"schema": 1, "sha256": digest, "model": self.model_name,
+                    "device": self.device, "shifts": self.shifts, "overlap": self.overlap}
+        manifest = workdir / "source.json"
+        try:
+            cached = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cached = None
+        if cached == identity and all(p.is_file() for p in (stems.voice, stems.background)):
             return stems
+        # Invalidar antes de tocar los stems: un fallo no debe publicar una pareja parcial.
+        manifest.unlink(missing_ok=True)
+        model = self._load()
         import numpy as np
         import soundfile
         import torch
         from demucs.apply import apply_model
 
-        model = self._load()
         rate, channels = model.samplerate, model.audio_channels
         raw = subprocess.run(
             [shutil.which("ffmpeg") or "ffmpeg", "-nostdin", "-v", "error", "-i", str(source),
@@ -79,6 +91,7 @@ class DemucsSeparator:
         workdir.mkdir(parents=True, exist_ok=True)
         for path, data in ((stems.voice, voice), (stems.background, background)):
             soundfile.write(str(path), data.T.numpy(), rate)
+        manifest.write_text(json.dumps(identity, sort_keys=True), encoding="utf-8")
         del sources, voice, background
         if self.device == "cuda":
             # Las activaciones de Demucs dejan GB reservados en el asignador; en un único proceso

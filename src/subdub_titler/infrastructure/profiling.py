@@ -6,7 +6,6 @@ import sys
 import time
 from collections.abc import Generator
 from contextlib import contextmanager, nullcontext
-from collections.abc import Generator
 from contextvars import ContextVar
 from dataclasses import asdict
 from pathlib import Path

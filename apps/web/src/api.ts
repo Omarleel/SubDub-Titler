@@ -7,10 +7,10 @@ export type ProfileEvent = {
   name: string; milliseconds: number; parent: string | null; depth: number;
   vram_peak_mb?: number | null; vram_device_mb?: number | null;
 }
-export type JobKind = 'transcribe' | 'dub' | 'dub-cue'
+export type JobKind = 'transcribe' | 'dub' | 'dub-cue' | 'dub-undo'
 export type Job = {
-  id: string; original_name: string; status: 'queued' | 'running' | 'completed' | 'failed';
-  created_at: string; updated_at: string; model_id: string; language: string; error: string | null;
+  id: string; original_name: string; status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  cancel_requested?: number; created_at: string; updated_at: string; model_id: string; language: string; error: string | null;
   transcript: Transcript | null; profiling: ProfileEvent[] | null;
   kind: JobKind; parent_id: string | null; params: Record<string, unknown>;
   result: DubResult | null; stage: string | null; progress: number | null;
@@ -80,7 +80,12 @@ async function unwrap<T>(response: Response): Promise<T> {
 }
 export const api = {
   models: () => fetch('/api/v1/models').then(r => unwrap<Model[]>(r)),
-  jobs: () => fetch('/api/v1/jobs').then(r => unwrap<Job[]>(r)),
+  jobs: (offset = 0, limit = 30) => fetch(`/api/v1/jobs?visible=true&summary=true&offset=${offset}&limit=${limit}`).then(r => unwrap<Job[]>(r)),
+  job: (id: string) => fetch(`/api/v1/jobs/${encodeURIComponent(id)}`).then(r => unwrap<Job>(r)),
+  revisions: (id: string) => fetch(`/api/v1/jobs/${id}/dub/revisions`).then(r => unwrap<{ count: number }>(r)),
+  undo: (id: string) => fetch(`/api/v1/jobs/${id}/dub/undo`, { method: 'POST' }).then(r => unwrap<Job>(r)),
+  cancel: (id: string) => fetch(`/api/v1/jobs/${id}/cancel`, { method: 'POST' }).then(r => unwrap<Job>(r)),
+  retry: (id: string) => fetch(`/api/v1/jobs/${id}/retry`, { method: 'POST' }).then(r => unwrap<Job>(r)),
   create: (form: FormData) => fetch('/api/v1/jobs', { method: 'POST', body: form }).then(r => unwrap<Job>(r)),
   evaluate: (reference: string, hypothesis: string, language: string) =>
     fetch('/api/v1/evaluate', {

@@ -126,7 +126,8 @@ def is_hallucination_segment(
         # (ej. habla coloquial con 'yeah, yeah, yeah' dentro de una frase amplia),
         # NO se descarta como alucinación.
         words = [w.lower().strip(".,?!;:-_\"'()[]") for w in clean.split() if w.strip()]
-        if avg_logprob is not None and avg_logprob >= -0.60 and (no_speech_prob is None or no_speech_prob <= 0.40):
+        if (avg_logprob is not None and avg_logprob >= -0.60
+                and (no_speech_prob is None or no_speech_prob <= 0.40)):
             return False
         if len(words) >= 8 and (len(set(words)) / len(words)) >= 0.50:
             return False

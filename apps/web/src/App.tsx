@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, type Job, type Model, type ProfileEvent } from './api'
 import { DubPage } from './DubPage'
+import { useJobs } from './useJobs'
 import { CueList, MediaPlayer, usePlayer } from './media'
 import { QualityPage } from './QualityPage'
 import { ROUTES, useLocation, type Route } from './router'
@@ -13,7 +14,7 @@ const PAGES: Record<Route, { icon: string; title: string; subtitle: string }> = 
   rendimiento: { icon: '▥', title: 'Rendimiento', subtitle: 'Cuánto tardó cada etapa del proceso y qué tan rápido fue frente al tiempo real.' },
 }
 const STATUS: Record<Job['status'], string> = {
-  queued: 'En cola', running: 'Procesando', completed: 'Completado', failed: 'Error',
+  queued: 'En cola', running: 'Procesando', completed: 'Completado', failed: 'Error', cancelled: 'Cancelado',
 }
 const STAGES: Record<string, string> = {
   'registry.engine_for': 'Preparar motor',
@@ -62,7 +63,7 @@ const TH = 'text-left p-[16px] border-b border-[#283548] text-[10px] text-[#8d9e
 const TD = 'text-left p-[16px] border-b border-[#283548]'
 const BADGE: Record<Job['status'], string> = {
   queued: 'bg-[#283247] text-[#c8d4ef]', running: 'bg-[#283247] text-[#c8d4ef]',
-  completed: 'bg-ok-bg text-ok', failed: 'bg-bad-bg text-bad',
+  completed: 'bg-ok-bg text-ok', failed: 'bg-bad-bg text-bad', cancelled: 'bg-[#283247] text-[#c8d4ef]',
 }
 const options = [{ code: 'auto', title: 'Automático' }, { code: 'es', title: 'Español' },
   { code: 'en', title: 'Inglés' }, { code: 'ja', title: 'Japonés' }, { code: 'zh', title: 'Chino' }]
@@ -82,7 +83,7 @@ export function App() {
   const { route, job: jobId, navigate } = useLocation()
   const player = usePlayer()
   const [models, setModels] = useState<Model[]>([])
-  const [jobs, setJobs] = useState<Job[]>([])
+  const { jobs, setJobs, hasMore, loadMore, error: jobsError } = useJobs(jobId ?? undefined)
   const [file, setFile] = useState<File | null>(null)
   const [model, setModel] = useState('small')
   const [language, setLanguage] = useState('auto')
@@ -102,14 +103,10 @@ export function App() {
 
   useEffect(() => {
     api.models().then(setModels).catch(e => setError(String(e)))
-    const poll = () => api.jobs().then(setJobs).catch(e => setError(String(e)))
-    poll()
-    const id = window.setInterval(poll, 1800)
-    return () => window.clearInterval(id)
   }, [])
 
   // Las regeneraciones de un subtítulo son trabajos internos: no aparecen en el historial.
-  const visible = jobs.filter(j => j.kind !== 'dub-cue')
+  const visible = jobs.filter(j => j.kind === 'transcribe' || j.kind === 'dub')
   const transcriptions = visible.filter(j => (j.kind ?? 'transcribe') === 'transcribe')
   const scope = route === 'doblaje' || route === 'rendimiento' ? visible : transcriptions
   const selectedJob = jobs.find(j => j.id === jobId)
@@ -175,7 +172,7 @@ export function App() {
       <div className="overflow-auto max-h-[40vh] upto680:hidden">{visible.length === 0 ? <p className="text-[#7b8ca5] text-[12px]">Aún no hay trabajos.</p> : visible.map(j =>
         <button className={`block w-full text-left border-0 rounded-[7px] py-[11px] px-[13px] ${job?.id === j.id ? 'bg-[#192338] text-[#f3f4ff]' : 'bg-transparent text-[#9aaec3] hover:bg-[#192338] hover:text-[#f3f4ff]'}`} key={j.id} onClick={() => navigate({ job: j.id })}>
           <span className="block overflow-hidden text-ellipsis whitespace-nowrap text-[12px]">{j.original_name}</span><small className="block text-[#71859e] text-[10px] mt-[4px]">{j.kind === 'dub' ? `Doblaje ${String(j.params?.target_language ?? '').toUpperCase()} · ` : ''}{STATUS[j.status]}</small>
-        </button>)}</div>
+        </button>)}{hasMore && <button type="button" className={ui.ghostBtn} onClick={loadMore}>Cargar trabajos anteriores</button>}</div>
       <div className="mt-auto pt-[15px] px-[10px] pb-[4px] text-[10px] font-bold tracking-[1px] text-[#99b0bb] flex items-center gap-[8px] upto680:hidden"><div className={ui.liveDot}/> BACKEND LOCAL <small className="ml-auto text-[#67758e]">v0.1.0</small></div>
     </aside>
 
@@ -185,6 +182,7 @@ export function App() {
         <div className="flex gap-[19px] items-center"><span className="text-[11px] text-[#8fa5b9] border border-[#263447] py-[7px] px-[12px] rounded-[7px] upto680:hidden">🔒 Offline-ready</span><span className="grid place-items-center bg-[#293653] border border-[#3b4f69] w-[34px] h-[34px] rounded-[50%] font-bold text-[11px]">SD</span></div>
       </header>
       <div className="max-w-[1320px] m-auto pt-[48px] px-[48px] pb-[25px] upto1150:p-[28px] upto680:py-[24px] upto680:px-[16px]">
+        {jobsError && <div role="alert" className={ui.errorBanner}>{jobsError}</div>}
         {error && <div role="alert" className={ui.errorBanner}>{error}<button className={ui.errorClose} onClick={() => setError(null)}>✕</button></div>}
         <div className="flex justify-between items-center gap-[12px] mb-[31px] upto680:block">
           <div><div className="text-[10px] text-[#7f86ff] tracking-[2.4px] font-bold mb-[12px]">AUDIO INTELLIGENCE · LOCAL GPU</div>
@@ -193,6 +191,19 @@ export function App() {
           <span className="border border-[#224f48] bg-[#102923] text-[#77d9be] text-[11px] flex gap-[9px] items-center py-[9px] px-[13px] rounded-[24px] whitespace-nowrap upto680:inline-flex upto680:mt-[16px]"><i className={ui.liveDot}/> Procesamiento local</span>
         </div>
 
+        {job && <div className="flex gap-[12px] items-center mb-[20px]">
+          {(job.status === 'queued' || job.status === 'running') && <>
+            <button type="button" className={ui.ghostBtn} disabled={!!job.cancel_requested} onClick={async () => {
+              try { const updated = await api.cancel(job.id); setJobs(prev => prev.map(j => j.id === updated.id ? updated : j)) }
+              catch (e) { setError(String(e)) }
+            }}>{job.cancel_requested ? 'Cancelación solicitada…' : 'Cancelar trabajo'}</button>
+            <span className="text-[12px] text-[#96a8be]">La etapa actual termina antes de cancelar.</span>
+          </>}
+          {(job.status === 'failed' || job.status === 'cancelled') && <button type="button" className={ui.ghostBtn} onClick={async () => {
+            try { const created = await api.retry(job.id); setJobs(prev => [created, ...prev]); navigate({ job: created.id }) }
+            catch (e) { setError(String(e)) }
+          }}>Reintentar con la misma configuración</button>}
+        </div>}
         {route === 'transcribir' && <>
           <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-[22px] upto1150:grid-cols-[1fr]">
             <section className={ui.panel}><div className={ui.panelHead}><h2 className={ui.panelTitle}>01 <span className={ui.panelTitleSub}>· Nueva transcripción</span></h2><span className={ui.step}>INPUT</span></div>
@@ -201,7 +212,7 @@ export function App() {
                 <div className="text-[27px] rounded-[11px] grid place-items-center bg-[#263354] w-[49px] h-[49px] text-[#98a4ff] mb-[4px]">⇧</div>
                 <strong className="text-[14px] max-w-[94%] overflow-hidden text-ellipsis whitespace-nowrap">{file ? file.name : 'Arrastra tu archivo aquí'}</strong>
                 <span className="text-[12px] text-[#94a2b5]">{file ? `${(file.size / 1048576).toFixed(1)} MB · listo para procesar` : 'o haz clic para seleccionar un archivo'}</span>
-                <small className="text-[10px] text-[#657a94] mt-[7px]">MP4, MKV, MOV, WAV, FLAC, MP3, M4A, WEBM · Máx. 2 GiB</small>
+                <small className="text-[10px] text-[#657a94] mt-[7px]">MP4, MKV, MOV, WAV, FLAC, MP3, M4A, WEBM · Límite configurable en el servidor</small>
               </label>
               <div className="grid grid-cols-[1fr_1fr] gap-[17px] my-[22px]">
                 <label className={FIELD_LABEL}>Idioma<select className={FIELD} value={language} onChange={e => setLanguage(e.target.value)}>{options.map(o => <option key={o.code} value={o.code}>{o.title}</option>)}</select></label>

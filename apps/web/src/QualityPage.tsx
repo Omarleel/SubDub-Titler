@@ -29,7 +29,7 @@ function verdict(rate: number): { label: string; tone: keyof typeof ui.TONES } {
 type Props = { jobs: Job[]; job: Job | undefined; onSelect: (id: string) => void }
 
 export function QualityPage({ jobs, job, onSelect }: Props) {
-  const completed = jobs.filter(j => j.status === 'completed' && j.transcript)
+  const completed = jobs.filter(j => j.status === 'completed')
   const transcript = job?.status === 'completed' ? job.transcript : null
   const segments = transcript?.segments ?? []
   const player = usePlayer()

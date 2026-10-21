@@ -5,11 +5,15 @@ llegan de una `DubComponentFactory` (inversión de dependencias): un motor TTS, 
 separador nuevo se registra en infraestructura sin tocar este módulo.
 """
 import json
+import os
+import shutil
+import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Protocol
+from uuid import uuid4
 
 from subdub_titler.application.dub_quality import DubEvaluator
 from subdub_titler.application.quality import evaluate
@@ -169,112 +173,141 @@ class DubUseCase:
             # más el del doblaje y OmniVoice desbordaban los 16 GB (verificación ~10x más lenta).
             self._factory.release_idle()
             pipe = self._factory.build(request)
-        if transcript is None:
-            progress("transcribir", 0.0)
-            transcript = self._transcripts(request, profiler)
-            self._factory.release_idle()  # Whisper de la transcripción: ~3.5 GB con large-v3
-        cues = cues_from_transcript(transcript)
-        if not cues:
-            raise ValueError("La transcripción no tiene diálogo que doblar")
-        source_language = transcript.language
-        media_end = pipe.audio.duration(request.source)
-        speech = speech_spans(cues)  # antes de fusionar: tiempos por palabra intactos
+        try:
+            if transcript is None:
+                progress("transcribir", 0.0)
+                transcript = self._transcripts(request, profiler)
+                self._factory.release_idle()  # Whisper de la transcripción: ~3.5 GB con large-v3
+            cues = cues_from_transcript(transcript)
+            if not cues:
+                raise ValueError("La transcripción no tiene diálogo que doblar")
+            source_language = transcript.language
+            media_end = pipe.audio.duration(request.source)
+            speech = speech_spans(cues)  # antes de fusionar: tiempos por palabra intactos
 
-        stems = None
-        if pipe.separator is not None:
-            progress("separar", 0.1)
-            with profiler.measure("dub.separate"):
-                stems = pipe.separator.separate(request.source, stems_dir or space.stems)
-            _release(pipe.separator)
-        voice_source = stems.voice if stems else request.source
+            stems = None
+            if pipe.separator is not None:
+                progress("separar", 0.1)
+                with profiler.measure("dub.separate"):
+                    stems = pipe.separator.separate(request.source, stems_dir or space.stems)
+                _release(pipe.separator)
+            voice_source = stems.voice if stems else request.source
 
-        if request.diarize and pipe.diarizer is not None:
-            progress("hablantes", 0.25)
-            with profiler.measure("dub.diarize"):
-                # Ventanas alineadas a palabras: un cue puede contener un cambio de turno.
-                windows = diarization_windows(cues)
-                labels = pipe.diarizer.assign(voice_source, [(w.start, w.end) for w in windows],
-                                              request.max_speakers)
-                cues = split_by_speaker(cues, windows, labels)
-            _release(pipe.diarizer)
-        if request.merge_fragments:
-            cues = merge_fragments(cues)
+            if request.diarize and pipe.diarizer is not None:
+                progress("hablantes", 0.25)
+                with profiler.measure("dub.diarize"):
+                    # Ventanas alineadas a palabras: un cue puede contener un cambio de turno.
+                    windows = diarization_windows(cues)
+                    labels = pipe.diarizer.assign(voice_source, [(w.start, w.end) for w in windows],
+                                                  request.max_speakers)
+                    cues = split_by_speaker(cues, windows, labels)
+                _release(pipe.diarizer)
+            if request.merge_fragments:
+                cues = merge_fragments(cues)
 
-        progress("voz", 0.3)
-        options = {speaker: reference_candidates(cues, speaker=speaker,
-                                                 limit=request.reference_candidates)
-                   for speaker in speakers_by_presence(cues)}
-        with profiler.measure("dub.voice_prompt"):
-            voices = {speaker: self._voice(pipe, voice_source, spans[0])
-                      for speaker, spans in options.items()}
+            progress("voz", 0.3)
+            options = {speaker: reference_candidates(cues, speaker=speaker,
+                                                     limit=request.reference_candidates)
+                       for speaker in speakers_by_presence(cues)}
+            with profiler.measure("dub.voice_prompt"):
+                voices = {speaker: self._voice(pipe, voice_source, spans[0])
+                          for speaker, spans in options.items()}
 
-        progress("traducir", 0.35)
-        with profiler.measure("dub.translate"):
-            candidates = self._translate(pipe.translator, cues, source_language,
-                                         request.target_language, request.n_best)
-        _release(pipe.translator)
+            progress("traducir", 0.35)
+            with profiler.measure("dub.translate"):
+                candidates = self._translate(pipe.translator, cues, source_language,
+                                             request.target_language, request.n_best)
+            _release(pipe.translator)
 
-        with profiler.measure("dub.fit"):
-            plan = self._plan(pipe.cloner, cues, candidates, media_end,
-                              request.target_language, voices, request)
+            with profiler.measure("dub.fit"):
+                plan = self._plan(pipe.cloner, cues, candidates, media_end,
+                                  request.target_language, voices, request)
 
-        if request.reference_candidates > 1 and pipe.verifier and pipe.speaker_encoder:
-            progress("voz", 0.4)
-            with profiler.measure("dub.reference_probe"):
-                chosen = self._probe_references(pipe, request, plan, options, voices,
-                                                voice_source)
-            if any(chosen[s].span != voices[s].span for s in voices):
-                voices = chosen
-                with profiler.measure("dub.fit"):
-                    plan = self._plan(pipe.cloner, cues, candidates, media_end,
-                                      request.target_language, voices, request)
-            if not request.evaluate:
-                _release(pipe.speaker_encoder)
+            if request.reference_candidates > 1 and pipe.verifier and pipe.speaker_encoder:
+                progress("voz", 0.4)
+                with profiler.measure("dub.reference_probe"):
+                    chosen = self._probe_references(pipe, request, plan, options, voices,
+                                                    voice_source)
+                if any(chosen[s].span != voices[s].span for s in voices):
+                    voices = chosen
+                    with profiler.measure("dub.fit"):
+                        plan = self._plan(pipe.cloner, cues, candidates, media_end,
+                                          request.target_language, voices, request)
+                if not request.evaluate:
+                    _release(pipe.speaker_encoder)
 
-        progress("sintetizar", 0.45)
-        with profiler.measure("dub.tts.generate"):
-            clips = self._synthesize(pipe.cloner, plan, request, voices, progress,
-                                     pipe=pipe, voice_source=voice_source)
-        if request.verify_attempts and pipe.verifier is not None:
-            progress("verificar", 0.8)
-            with profiler.measure("dub.verify"):
-                plan = self._verify_and_retry(pipe, request, plan, clips, voices)
-        _release(pipe.cloner, pipe.verifier)
-        track = tuple(replace(item, generated_seconds=round(clips[item.index].duration, 3))
-                      for item in plan)
-        with profiler.measure("dub.save_cues"):
-            for item in track:
-                pipe.audio.save(clips[item.index], space.cue(item.index))
+            progress("sintetizar", 0.45)
+            with profiler.measure("dub.tts.generate"):
+                clips = self._synthesize(pipe.cloner, plan, request, voices, progress,
+                                         pipe=pipe, voice_source=voice_source)
+            if request.verify_attempts and pipe.verifier is not None:
+                progress("verificar", 0.8)
+                with profiler.measure("dub.verify"):
+                    plan = self._verify_and_retry(pipe, request, plan, clips, voices)
+            _release(pipe.cloner, pipe.verifier)
+            track = tuple(replace(item, generated_seconds=round(clips[item.index].duration, 3))
+                          for item in plan)
+            with profiler.measure("dub.save_cues"):
+                for item in track:
+                    pipe.audio.save(clips[item.index], space.cue(item.index))
 
-        progress("mezclar", 0.85)
-        outputs = self._render(pipe, request, space, track, clips, stems, media_end, profiler,
-                               speech)
-        main = next(iter(voices.values()))
-        report = DubReport(track, sync_metrics(track, self._policy), main.span, outputs,
-                           references={s: v.span for s, v in voices.items()}, speech=speech)
+            progress("mezclar", 0.85)
+            outputs = self._render(pipe, request, space, track, clips, stems, media_end, profiler,
+                                   speech)
+            main = next(iter(voices.values()))
+            report = DubReport(track, sync_metrics(track, self._policy), main.span, outputs,
+                               references={s: v.span for s, v in voices.items()}, speech=speech)
 
-        if request.evaluate and pipe.evaluator is not None:
-            progress("evaluar", 0.92)
-            with profiler.measure("dub.eval"):
-                report = self._evaluate(pipe, request, report, clips, voices, voice_source,
-                                        stems, profiler)
-            _release(pipe.evaluator)
-        save_report(report, space.report)
-        progress("listo", 1.0)
-        return report
+            if request.evaluate and pipe.evaluator is not None:
+                progress("evaluar", 0.92)
+                with profiler.measure("dub.eval"):
+                    report = self._evaluate(pipe, request, report, clips, voices, voice_source,
+                                            stems, profiler)
+                _release(pipe.evaluator)
+            save_report(report, space.report)
+            progress("listo", 1.0)
+            return report
+        except BaseException:
+            _release(pipe.separator, pipe.diarizer, pipe.translator, pipe.cloner,
+                     pipe.verifier, pipe.evaluator, pipe.speaker_encoder)
+            raise
+
 
     def regenerate(self, request: DubRequest, workdir: Path, index: int, text: str,
-                   profiler: Profiler | None = None) -> DubReport:
-        """Re-sintetiza un cue con otro texto y vuelve a mezclar, sin repetir el resto."""
+                   profiler: Profiler | None = None, *, report: DubReport | None = None,
+                   publish: bool = True) -> DubReport:
+        """Construye una revisión aislada; nunca sobrescribe los artefactos activos.
+
+        La CLI publica report.json atómicamente. La API usa publish=False y activa
+        el resultado mediante una transacción SQLite después de completar la revisión.
+        """
         profiler = profiler or _NullProfiler()
-        space = Workspace(workdir)
-        report = load_report(space.report)
+        report = report or load_report(Workspace(workdir).report)
         current = next((c for c in report.track if c.index == index), None)
         if current is None:
             raise ValueError(f"Cue inexistente: {index}")
         if not text.strip():
             raise ValueError("El texto no puede estar vacío")
+        space = Workspace(workdir / "revisions" / uuid4().hex)
+        source_cues = Path(report.outputs.get("cues") or workdir / "cues")
+        space.cue(index).parent.mkdir(parents=True)
+        for cue in report.track:
+            if cue.index != index:
+                shutil.copy2(source_cues / f"{cue.index:04d}.wav", space.cue(cue.index))
+        self._factory.release_idle()
         pipe = self._factory.build(request)
+        try:
+            revised = self._regenerate(request, space, index, text.strip(), profiler,
+                                       report, current, pipe)
+        finally:
+            _release(pipe.cloner, pipe.verifier, pipe.evaluator, pipe.speaker_encoder)
+        if publish:
+            save_report(revised, Workspace(workdir).report)
+        return revised
+
+    def _regenerate(self, request: DubRequest, space: Workspace, index: int, text: str,
+                    profiler: Profiler, report: DubReport, current: DubbedCue,
+                    pipe: DubPipeline) -> DubReport:
         voice_source = Path(report.outputs.get("voice_stem") or request.source)
         with profiler.measure("dub.voice_prompt"):
             voice = self._voice(pipe, voice_source, report.reference_for(current.speaker))
@@ -305,7 +338,12 @@ class DubUseCase:
         if pipe.evaluator is not None and cue_quality:
             with profiler.measure("dub.eval"):
                 fresh = pipe.evaluator.evaluate_cues((updated,), {index: clip}, voice.clip,
-                                                     request.target_language)[0]
+                                                     request.target_language,
+                                                     {index: pipe.audio.load(
+                                                         voice_source, pipe.cloner.sample_rate,
+                                                         current.start,
+                                                         current.start + current.slot_seconds,
+                                                     )})[0]
             cue_quality = tuple(fresh if q.index == index else q for q in cue_quality)
         sync = sync_metrics(track, self._policy)
         quality = report.quality
@@ -527,7 +565,8 @@ class DubUseCase:
             request.target_language, request.tts_engine, media_end,
         )
         space.subtitles.write_text(pipe.subtitles.render(transcript), encoding="utf-8")
-        outputs = {"voice": str(mix.voice), "mix": str(mix.mix), "subtitles": str(space.subtitles)}
+        outputs = {"voice": str(mix.voice), "mix": str(mix.mix),
+                   "subtitles": str(space.subtitles), "cues": str(space.root / "cues")}
         if stems:
             outputs |= {"voice_stem": str(stems.voice), "background_stem": str(stems.background)}
         if mix.bed is not None:
@@ -602,8 +641,16 @@ def report_to_dict(report: DubReport) -> dict:
 
 def save_report(report: DubReport, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report_to_dict(report), ensure_ascii=False, indent=2),
-                    encoding="utf-8")
+    fd, name = tempfile.mkstemp(prefix=".report-", suffix=".json", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(report_to_dict(report), stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def report_from_dict(data: dict) -> DubReport:

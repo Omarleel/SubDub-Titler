@@ -63,7 +63,7 @@ type Props = { jobs: Job[]; job: Job | undefined; onSelect: (id: string, created
 
 export function DubPage({ jobs, job, onSelect }: Props) {
   const [optimisticDub, setOptimisticDub] = useState<Job | null>(null)
-  const sources = jobs.filter(j => j.kind === 'transcribe' && j.status === 'completed' && j.transcript)
+  const sources = jobs.filter(j => j.kind === 'transcribe' && j.status === 'completed')
   const source = job?.kind === 'dub' ? jobs.find(j => j.id === job.parent_id) : job?.kind === 'transcribe' ? job : sources[0]
   const dubsOfSource = jobs.filter(j => j.kind === 'dub' && j.parent_id === source?.id)
   const dub = optimisticDub ?? (job?.kind === 'dub' ? job : dubsOfSource[0])
@@ -78,6 +78,8 @@ export function DubPage({ jobs, job, onSelect }: Props) {
   const [selected, setSelected] = useState(0)
   const [text, setText] = useState('')
   const [pendingJob, setPendingJob] = useState<string | null>(null)
+  const [revisionCount, setRevisionCount] = useState(0)
+  const [onlyProblems, setOnlyProblems] = useState(false)
   const [ratings, setRatings] = useState<Ratings | null>(null)
   const [options, setOptions] = useState<DubOptions>({
     target_language: 'es', num_step: 16, tts_batch: 8, n_best: 4, separator: 'htdemucs',
@@ -92,8 +94,7 @@ export function DubPage({ jobs, job, onSelect }: Props) {
   const cue = track[selected] as DubCue | undefined
   const cueQuality = cue ? quality.get(cue.index) : undefined
   const range = cue ? { start: cue.start, end: cue.start + Math.max(cue.slot_seconds, cue.generated_seconds) } : null
-  const regenerating = !!pendingJob && jobs.find(j => j.id === pendingJob)?.status !== 'completed'
-    && jobs.find(j => j.id === pendingJob)?.status !== 'failed'
+  const regenerating = !!pendingJob
 
   useEffect(() => {
     if (source) setOptions(o => ({ ...o, target_language: source.transcript?.language === 'es' ? 'en' : o.target_language }))
@@ -103,10 +104,28 @@ export function DubPage({ jobs, job, onSelect }: Props) {
   }, [dub?.id, dub?.status])
   useEffect(() => { setText(cue?.target_text ?? '') }, [cue?.index, cue?.target_text])
   useEffect(() => {
-    const finished = jobs.find(j => j.id === pendingJob)
-    if (finished?.status === 'failed') { setError(finished.error); setPendingJob(null) }
-    if (finished?.status === 'completed') setPendingJob(null)
-  }, [jobs, pendingJob])
+    if (dub?.status !== 'completed') { setRevisionCount(0); return }
+    let stopped = false
+    api.revisions(dub.id).then(r => { if (!stopped) setRevisionCount(r.count) }).catch(() => {})
+    api.ratings(dub.id).then(r => { if (!stopped) setRatings(r) }).catch(() => {})
+    return () => { stopped = true }
+  }, [dub?.id, version])
+  useEffect(() => {
+    if (!pendingJob) return
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout>
+    const poll = async () => {
+      try {
+        const finished = await api.job(pendingJob)
+        if (stopped) return
+        if (finished.status === 'failed') { setError(finished.error); setPendingJob(null); return }
+        if (finished.status === 'completed') { setPendingJob(null); return }
+      } catch (e) { if (!stopped) setError(String(e)) }
+      if (!stopped) timer = setTimeout(poll, 1000)
+    }
+    void poll()
+    return () => { stopped = true; clearTimeout(timer) }
+  }, [pendingJob])
 
   const subtitles = useMemo(() => track.length ? URL.createObjectURL(new Blob([vtt(track)], { type: 'text/vtt' })) : '', [track])
   useEffect(() => () => { if (subtitles) URL.revokeObjectURL(subtitles) }, [subtitles])
@@ -238,8 +257,11 @@ export function DubPage({ jobs, job, onSelect }: Props) {
                 .map(c => <option key={c.id} value={c.id} title={c.description}>{c.id}</option>)}</select></label>
           <label className="text-[12px] text-[#aebcd0] flex items-center gap-[7px] py-[9px]"><input type="checkbox" checked={options.evaluate}
             onChange={e => setOptions({ ...options, evaluate: e.target.checked })} /> Medir calidad</label>
-          <label className="text-[12px] text-[#aebcd0] flex items-center gap-[7px] py-[9px]" title="Detecta a cada hablante y clona su voz por separado"><input type="checkbox" checked={options.diarize}
-            onChange={e => setOptions({ ...options, diarize: e.target.checked })} /> Varios hablantes</label>
+          <label className="text-[11px] text-[#96a8be] font-semibold flex flex-col gap-[6px]">Referencias por voz
+            <select className={SELECT} value={options.reference_candidates} onChange={e => setOptions({ ...options, reference_candidates: Number(e.target.value) })}>
+              {[1, 2, 4, 8].map(n => <option key={n} value={n}>{n}{n === 1 ? ' (rápido)' : ' (comparar referencias)'}</option>)}</select></label>
+          <label className="text-[12px] text-[#aebcd0] flex items-center gap-[7px] py-[9px]" title="Vuelve a detectar los hablantes. Si no se activa, conserva los identificados en la transcripción."><input type="checkbox" checked={options.diarize}
+            onChange={e => setOptions({ ...options, diarize: e.target.checked })} /> Recalcular hablantes</label>
           <button
             className={`${ui.primaryBtn} w-auto ml-auto min-w-[200px] flex items-center justify-center gap-[8px] transition-all duration-200`}
             disabled={!source || busy}
@@ -274,6 +296,7 @@ export function DubPage({ jobs, job, onSelect }: Props) {
                   {String(d.params.target_language ?? '').toUpperCase()} · {String(d.params.num_step)} pasos ·{' '}
                   {d.status === 'completed'
                     ? new Date(d.created_at).toLocaleTimeString()
+                    : d.status === 'cancelled' ? 'cancelado'
                     : d.status === 'failed'
                     ? 'error'
                     : `${Math.round((d.progress ?? 0) * 100)} %`}
@@ -318,7 +341,7 @@ export function DubPage({ jobs, job, onSelect }: Props) {
             <div className={COUNT}><dt className={COUNT_LABEL}>Velocidad de habla</dt><dd className={COUNT_VALUE}>{result.sync.speed_min}–{result.sync.speed_max}×</dd></div>
             <div className={COUNT}><dt className={COUNT_LABEL}>Sonoridad</dt><dd className={COUNT_VALUE}>{result.quality?.lufs ?? result.outputs.lufs ?? 'N/D'} LUFS</dd></div>
             <div className={COUNT}><dt className={COUNT_LABEL}>UTMOS doblaje / original</dt><dd className={COUNT_VALUE}>{result.quality?.mos?.toFixed(2) ?? 'N/D'} / {result.quality?.mos_original?.toFixed(2) ?? 'N/D'}</dd></div>
-            <div className={COUNT} title="Probabilidad media de que Whisper oiga el idioma destino: más alta = menos acento extranjero"><dt className={COUNT_LABEL}>Suena nativo</dt><dd className={COUNT_VALUE}>{result.quality?.language_prob == null ? 'N/D' : pct(result.quality.language_prob)}</dd></div>
+            <div className={COUNT} title="Probabilidad media de que Whisper oiga el idioma destino: más alta = menos acento extranjero"><dt className={COUNT_LABEL}>Idioma detectado (orientativo)</dt><dd className={COUNT_VALUE}>{result.quality?.language_prob == null ? 'N/D' : pct(result.quality.language_prob)}</dd></div>
             <div className={COUNT}><dt className={COUNT_LABEL}>Valoración humana</dt><dd className={COUNT_VALUE}>{ratings?.mean != null ? `${ratings.mean.toFixed(2)} / 5 (${ratings.count})` : 'Sin valorar'}</dd></div>
           </dl>
           {gates.length > 0 && <ul className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-[6px] mt-[14px] mb-0 p-0 list-none upto900:grid-cols-[1fr]">
@@ -330,6 +353,7 @@ export function DubPage({ jobs, job, onSelect }: Props) {
           </ul>}
           <div className="flex gap-[14px] flex-wrap mt-[14px] text-[12px]">
             {result.outputs.video && <a className="text-[#b5b6ff] font-bold no-underline" href={api.dubArtifact(dub.id, 'video', version)} download>↓ Video doblado (MP4, 2 pistas)</a>}
+            <a className="text-[#b5b6ff] font-bold no-underline" href={`/api/v1/jobs/${dub.id}/dub/report`} download="report.json">↓ Informe de la revisión activa</a>
             <a className="text-[#b5b6ff] font-bold no-underline" href={api.dubArtifact(dub.id, 'mix', version)} download>↓ Audio mezclado (FLAC)</a>
             <a className="text-[#b5b6ff] font-bold no-underline" href={api.dubArtifact(dub.id, 'subtitles', version)} download>↓ Subtítulos traducidos (SRT)</a>
           </div>
@@ -348,9 +372,11 @@ export function DubPage({ jobs, job, onSelect }: Props) {
                 {mode === 'dub' && subtitles && <track kind="subtitles" src={subtitles} default srcLang={String(dub.params.target_language)} label="Doblaje" />}
               </video>
             </div>
+            <label className="text-[12px] mt-[12px]"><input type="checkbox" checked={onlyProblems} onChange={e => setOnlyProblems(e.target.checked)} /> Sólo frases que necesitan revisión ({track.filter(c => cueTone(c, quality.get(c.index)?.cer) !== 'good').length})</label>
             <div className="flex-1 min-h-[120px] mt-[12px] overflow-auto border border-[#283347] rounded-[8px] upto1100:max-h-[340px]" ref={listRef} role="listbox" aria-label="Subtítulos doblados">
               {track.map((c, i) => {
                 const tone = cueTone(c, quality.get(c.index)?.cer)
+                if (onlyProblems && tone === 'good') return null
                 return <button type="button" role="option" aria-selected={i === selected} key={c.index}
                   onClick={() => { setSelected(i); player.seek(c.start) }}
                   className={`block w-full text-left text-inherit cursor-pointer py-[10px] px-[14px] border-0 border-b border-b-[#263144] border-l-[3px] last:border-b-0 ${i === selected ? 'border-l-[#8b8cff] bg-[#25264d]' : i === playing ? 'border-l-ok bg-[#13231f]' : 'border-l-transparent bg-transparent hover:bg-field'}`}>
@@ -385,6 +411,9 @@ export function DubPage({ jobs, job, onSelect }: Props) {
               <button className={`${ui.primaryBtn} mt-[12px]`} disabled={!canRegenerate} onClick={regenerate}>
                 {regenerating ? 'Regenerando en la GPU…' : '↻ Regenerar este subtítulo'} <span className="ml-auto text-[10px] font-medium opacity-85"><kbd className={ui.kbdOnPrimary}>Ctrl</kbd>+<kbd className={ui.kbdOnPrimary}>Enter</kbd></span></button>
 
+              {revisionCount > 0 && <button type="button" className={`${TRANSPORT_BTN} mt-[8px]`} disabled={regenerating} onClick={async () => {
+                try { setPendingJob((await api.undo(dub.id)).id) } catch (e) { setError(String(e)) }
+              }}>Deshacer última edición ({revisionCount})</button>}
               <dl className="grid grid-cols-[repeat(4,minmax(0,1fr))] gap-[8px] mt-[14px] mx-0 mb-0">
                 <div className={COUNT}><dt className={COUNT_LABEL}>Ranura</dt><dd className={COUNT_VALUE}>{seconds(cue.slot_seconds)}</dd></div>
                 <div className={COUNT}><dt className={COUNT_LABEL}>Natural</dt><dd className={COUNT_VALUE}>{seconds(cue.natural_seconds)}</dd></div>
@@ -397,7 +426,7 @@ export function DubPage({ jobs, job, onSelect }: Props) {
                 <div className={COUNT}><dt className={COUNT_LABEL}>CER ida y vuelta</dt><dd className={COUNT_VALUE}>{cueQuality.cer == null ? 'N/D' : pct(cueQuality.cer)}</dd></div>
                 <div className={COUNT}><dt className={COUNT_LABEL}>Parecido con el original</dt><dd className={COUNT_VALUE}>{cueQuality.similarity_slot?.toFixed(2) ?? cueQuality.similarity?.toFixed(2) ?? 'N/D'}</dd></div>
                 <div className={COUNT}><dt className={COUNT_LABEL}>UTMOS</dt><dd className={COUNT_VALUE}>{cueQuality.mos?.toFixed(2) ?? 'N/D'}</dd></div>
-                <div className={COUNT}><dt className={COUNT_LABEL}>Suena nativo</dt><dd className={COUNT_VALUE}>{cueQuality.language_prob == null ? 'N/D' : pct(cueQuality.language_prob)}</dd></div>
+                <div className={COUNT}><dt className={COUNT_LABEL}>Idioma detectado (orientativo)</dt><dd className={COUNT_VALUE}>{cueQuality.language_prob == null ? 'N/D' : pct(cueQuality.language_prob)}</dd></div>
               </dl>}
               {cueQuality && <p className="text-[12px] text-[#9fb0c6] mt-[8px] mb-0 leading-[1.5]"><span className="text-[10px] tracking-[1px] text-[#7185a1] block mb-[3px]">LO QUE ENTIENDE EL ASR</span>{cueQuality.asr_text || '—'}</p>}
 

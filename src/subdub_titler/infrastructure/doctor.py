@@ -24,7 +24,8 @@ def _version(package: str) -> Check:
 def diagnostics() -> list[Check]:
     result = [_version("faster-whisper"), _version("ctranslate2")]
     result.append(Check("ffmpeg", shutil.which("ffmpeg") is not None,
-                        shutil.which("ffmpeg") or "ausente (PyAV puede decodificar sin FFmpeg CLI)"))
+                        shutil.which("ffmpeg")
+                        or "ausente (PyAV puede decodificar sin FFmpeg CLI)"))
     smi = shutil.which("nvidia-smi")
     if smi:
         try:

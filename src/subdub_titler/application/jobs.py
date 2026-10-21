@@ -12,7 +12,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol
 
-from subdub_titler.application.dubbing import DubUseCase, report_to_dict
+from subdub_titler.application.dubbing import DubUseCase, report_from_dict, report_to_dict
 from subdub_titler.application.transcribe import TranscribeUseCase, write_subtitle
 from subdub_titler.domain.dubbing import DubRequest
 from subdub_titler.domain.models import Segment, Transcript, TranscriptionRequest, Word
@@ -29,10 +29,15 @@ class JobHandler(Protocol):
         ...
 
 
+class JobCancelled(Exception):
+    """Cancelación cooperativa en una frontera entre etapas."""
+
+
 class LocalJobWorker:
     def __init__(self, jobs: SqliteJobs, handlers: Mapping[str, JobHandler]):
         self.jobs = jobs
         self.handlers = dict(handlers)
+        self._stopping = threading.Event()
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="subdub-gpu-worker", daemon=True)
 
@@ -45,6 +50,7 @@ class LocalJobWorker:
         self._queue.put(identifier)
 
     def stop(self) -> None:
+        self._stopping.set()
         self._queue.put(None)
         self._thread.join(timeout=2)
 
@@ -52,7 +58,7 @@ class LocalJobWorker:
         while True:
             identifier = self._queue.get()
             try:
-                if identifier is None:
+                if identifier is None or self._stopping.is_set():
                     return
                 self._execute(identifier)
             finally:
@@ -65,14 +71,20 @@ class LocalJobWorker:
         self.jobs.update(identifier, status="running", stage="inicio", progress=0.0)
 
         def progress(stage: str, fraction: float) -> None:
+            current = self.jobs.get(identifier)
+            if current and current["cancel_requested"]:
+                raise JobCancelled()
+            if self._stopping.is_set():
+                raise RuntimeError("Proceso interrumpido; puede reintentar el trabajo")
             self.jobs.update(identifier, stage=stage, progress=round(fraction, 3))
         try:
             handler = self.handlers.get(job["kind"])
             if handler is None:
                 raise ValueError(f"Tipo de trabajo sin manejador: {job['kind']}")
             fields = handler.run(job, progress)
-            self.jobs.update(identifier, status="completed", stage="listo", progress=1.0,
-                             **fields)
+            self.jobs.complete(identifier, fields)
+        except JobCancelled:
+            self.jobs.update(identifier, status="cancelled", stage="cancelado", error=None)
         except Exception as exc:
             logger.exception("Fallo de job %s", identifier)
             self.jobs.update(identifier, status="failed", error=f"{type(exc).__name__}: {exc}")
@@ -91,7 +103,8 @@ def transcript_from_dict(data: dict) -> Transcript:
 
 
 class TranscribeJobHandler:
-    def __init__(self, use_case: TranscribeUseCase, output_dir: Path) -> None:
+    def __init__(self, use_case: TranscribeUseCase | Callable[[str], TranscribeUseCase],
+                 output_dir: Path) -> None:
         self.use_case = use_case
         self.output_dir = output_dir
 
@@ -115,7 +128,9 @@ class TranscribeJobHandler:
             adaptive_two_pass=params.get("adaptive_two_pass", False),
         )
         profiler = SpanProfiler()
-        result = self.use_case.execute(request, profiler)
+        use_case = self.use_case(request.device) if callable(self.use_case) else self.use_case
+        result = use_case.execute(request, profiler, progress=progress)
+        progress("guardar subtítulos", 0.95)
         outfile = self.output_dir / f"{job['id']}.srt"
         with profiler.measure("subtitles.write_srt"):
             write_subtitle(result, outfile, "srt")
@@ -146,6 +161,7 @@ def dub_request(job: dict) -> DubRequest:
         max_speakers=params.get("max_speakers", 4),
         merge_fragments=params.get("merge_fragments", True),
         verify_attempts=params.get("verify_attempts", 1),
+        reference_candidates=params.get("reference_candidates", 1),
         text_guidance=params.get("text_guidance"),
         reference_guidance=params.get("reference_guidance"),
         accent_guidance=params.get("accent_guidance", 0.0),
@@ -200,9 +216,22 @@ class DubCueJobHandler:
         profiler = SpanProfiler()
         with profiler.activate():
             report = self.use_case.regenerate(dub_request(parent), self.dub.workdir(parent["id"]),
-                                              int(params["index"]), params["text"], profiler)
+                                              int(params["index"]), params["text"], profiler,
+                                              report=report_from_dict(parent["result"]),
+                                              publish=False)
         data = report_to_dict(report)
-        self.jobs.update(parent["id"], result_json=json.dumps(data, ensure_ascii=False))
+        self.jobs.activate_revision(parent["id"], data, cue_index=int(params["index"]))
         cue = next(c for c in data["track"] if c["index"] == int(params["index"]))
         return dict(result_json=json.dumps({"cue": cue}, ensure_ascii=False),
                     profiling_json=json.dumps([asdict(e) for e in profiler.events]))
+
+
+class DubUndoJobHandler:
+    """Serializa deshacer con la regeneración en el mismo worker."""
+
+    def __init__(self, jobs: SqliteJobs) -> None:
+        self.jobs = jobs
+
+    def run(self, job: dict, progress: Progress) -> dict:
+        result = self.jobs.undo_revision(job["parent_id"])
+        return {"result_json": json.dumps({"restored": True, "cues": len(result["track"])})}

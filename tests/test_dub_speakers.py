@@ -125,7 +125,7 @@ def test_diarization_windows_cover_cue_boundaries_with_short_words():
 
 
 def test_waveform_pads_short_and_empty_clips():
-    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch")
     from subdub_titler.domain.dubbing import AudioClip
     from subdub_titler.infrastructure.dub_eval import MIN_EVAL_SAMPLES, _waveform
 
